@@ -1,15 +1,27 @@
 # Anti-Dopamine Bar
 
-A small dock for macOS that splits your apps into modes. Each app belongs to one mode; switching
-hides the apps of the mode you leave and brings back, all at once, the ones of the mode you enter.
-The third mode, Socials, is gated: during a focus round it opens only after a wait you can shorten
-by clicking, and it opens freely during a break.
+> *Doe maar normaal, dan doe je al gek genoeg.*
+> Act normal, that's crazy enough already. (Dutch proverb)
+
+A small macOS dock that handles your dopamine the way a Dutch grandmother handles the biscuit tin:
+you get one biscuit with your coffee, then the lid goes back on and the tin goes back in the
+cupboard. Doomscrolling with your coffee? *Nee.*
+
+Your apps live in modes. Switching hides the apps of the mode you leave and brings back, all at
+once, the ones of the mode you enter. Work stays work. The third mode, Socials, is where the
+dopamine lives, so it has a lock on it. During a focus round it opens only after a wait. You can
+click to make the wait shorter, but the bar knows you did, and so do you. During a break it opens
+freely, and when the break is over you go straight back to work. *Niet zeuren.*
+
+No streaks, no badges, no confetti, no "you're on fire!". Those are dopamine too. Just a plain
+bar at the bottom of your screen, as gezellig as a Monday-morning stand-up.
 
 - **Modes**: Profile 1, Profile 2 and Socials by default. Rename them, change their icons, colours
   and apps in `~/.config/workspace-bar/config.json`. An app you open joins the mode you are in;
   right-click an icon to move it to another mode or share it with every mode.
-- **Pomodoro**: 25-minute focus rounds and 5-minute breaks. A break opens Socials; the end of a
-  break takes you back to where you came from.
+- **Pomodoro**: 25 minutes of focus, then a 5-minute break: the koffie-met-één-koekje rule. A
+  break opens Socials; the end of a break takes you back to where you came from, whether you
+  like it or not.
 - **Cards**: hover a mode's button to see its top five apps and open one straight from there.
 - **Add-ins** (the dock's menu, shown only for what is installed):
   - *Cmd-Tab for this mode only*: an AltTab-style switcher listing the current mode's apps.
