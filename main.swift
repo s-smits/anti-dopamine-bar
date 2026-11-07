@@ -578,11 +578,10 @@ enum Tiles {
     }
 }
 
-/// macOS refuses NSRunningApplication.hide() and unhide() from an app that is not active (every
-/// call returned false on 3 November 2026). The Accessibility API does it in milliseconds once the
-/// user grants Anti-Dopamine Bar Accessibility; without that grant, System Events does it, but each call
-/// took 1 to 3 s and let other app events run in the middle (a stale hide once hid Ghostty in its
-/// own mode), so it is only the fallback.
+/// NSRunningApplication.hide() and unhide() answer false from an app that is not active, yet they
+/// work (`set` below). Accessibility is the second try, and System Events, which took 1 to 3 s a
+/// call and let other app events run in the middle (a stale hide once hid Ghostty in its own mode),
+/// is the last resort.
 @MainActor
 enum Vis {
     static var trusted: Bool { AX.ready; return AXIsProcessTrusted() }
@@ -599,24 +598,36 @@ enum Vis {
         return err == .success
     }
 
-    /// Show or hide apps. The Accessibility calls run on `axQueue`, so an app slow to answer holds
-    /// up the queue and not the dock; they are made even where an app looks done already, since a
-    /// call still queued can change that. What Accessibility refuses comes back here for
-    /// NSRunningApplication and then System Events.
+    /// Show or hide apps. NSRunningApplication.hide() and unhide() are one message each and do not
+    /// wait for the app: under a millisecond to make, the window gone 6 to 21 ms later (measured on
+    /// this Mac, 4 November, as AltTab's Application.hideOrShow does it). Their answer means nothing:
+    /// they say false when it worked, which the dock once took for a refusal and sent every switch
+    /// to System Events. Accessibility waits on each app instead, up to a second for a busy one, so
+    /// it is only the second try, half a second on, for whatever has not changed by then, and the
+    /// first for apps without a Dock icon, which the messages do not reach.
+    static var want: [pid_t: Bool] = [:]   // the latest visibility asked of each app
+
     static func set(_ apps: [NSRunningApplication], visible: Bool) {
         guard !apps.isEmpty else { return }
-        guard trusted else { fallback(apps, visible: visible); return }
         for app in apps {
-            let pid = app.processIdentifier, id = app.bundleIdentifier ?? "?"
-            onApp(pid) {
-                guard !ax(pid, id, kAXHiddenAttribute, !visible) else { return }
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated {
-                        log("  Accessibility refused \(id)")
-                        fallback([app], visible: visible)
-                    }
-                }
-            }
+            want[app.processIdentifier] = visible
+            if app.activationPolicy == .regular { _ = visible ? app.unhide() : app.hide() } else { axSet(app, visible) }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            let left = apps.filter { !$0.isTerminated && want[$0.processIdentifier] == visible && $0.isHidden == visible }
+            guard !left.isEmpty else { return }
+            log("  \(visible ? "show" : "hide") \(left.compactMap(\.bundleIdentifier)) not done after 0.5 s: through Accessibility")
+            for app in left { axSet(app, visible) }
+        }
+    }
+
+    /// The Accessibility way, on the app's own queue, and System Events where that is refused.
+    static func axSet(_ app: NSRunningApplication, _ visible: Bool) {
+        guard trusted else { fallback([app], visible: visible); return }
+        let pid = app.processIdentifier, id = app.bundleIdentifier ?? "?"
+        onApp(pid) {
+            guard !ax(pid, id, kAXHiddenAttribute, !visible) else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { fallback([app], visible: visible) } }
         }
     }
 
@@ -636,8 +647,9 @@ enum Vis {
     /// Whether every queued call has been made.
     nonisolated static var idle: Bool { axGroup.wait(timeout: .now()) == .success }
 
+    /// The last resort: System Events, which takes one to three seconds. Only for apps still wrong.
     static func fallback(_ apps: [NSRunningApplication], visible: Bool) {
-        let refused = apps.filter { $0.isHidden == visible && !(visible ? $0.unhide() : $0.hide()) }
+        let refused = apps.filter { !$0.isTerminated && $0.isHidden == visible && (want[$0.processIdentifier] ?? visible) == visible }
         guard !refused.isEmpty else { return }
         let pids = refused.map { String($0.processIdentifier) }.joined(separator: ", ")
         let ok = systemEvents("""
@@ -659,18 +671,14 @@ enum Vis {
         let pid = app.processIdentifier, id = app.bundleIdentifier ?? "?"
         focusTicket += 1
         let ticket = focusTicket, before = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        guard WindowServer.available, trusted else { request(app); return }
-        // On the app's own queue, after any hide queued for it: unhide, then front its top window.
-        let hidden = app.isHidden
-        onApp(pid) {
-            if hidden { _ = ax(pid, id, kAXHiddenAttribute, false) }
-            if let wid = WindowServer.topWindow(pid), WindowServer.front(pid, wid) {
-                WindowServer.raise(pid, wid, ticket: ticket)
-                return
-            }
-            DispatchQueue.main.async {   // no window: ask, if this is still the focus you want
-                MainActor.assumeIsolated { if ticket == focusTicket { request(app) } }
-            }
+        guard WindowServer.available else { request(app); return }
+        // Unhide, then front its top window: three messages, none waiting on the app. Then raise
+        // that window on the app's own queue.
+        if app.isHidden || want[pid] == false { set([app], visible: true) }
+        if let wid = WindowServer.topWindow(pid), WindowServer.front(pid, wid) {
+            if trusted { onApp(pid) { WindowServer.raise(pid, wid, ticket: ticket) } }
+        } else {
+            request(app)   // no window: ask
         }
         // In front yet covered: raise once more, as AltTab does after its #6064, and should that not
         // do either, let macOS activate it. Checked whether or not it was in front already, since a
@@ -710,7 +718,7 @@ enum Vis {
     /// The public way: activate, then Accessibility, then System Events, each only if the last did
     /// not take.
     static func request(_ app: NSRunningApplication) {
-        if app.isHidden { _ = app.unhide() }
+        if app.isHidden { set([app], visible: true) }
         app.activate()
         let pid = app.processIdentifier, id = app.bundleIdentifier ?? "?"
         let ticket = focusTicket
@@ -1102,6 +1110,7 @@ final class DockModel: ObservableObject {
     }
 
     var incoming: Set<String> = []   // apps a switch is bringing back, until it has settled
+    var switchCount = 0
 
     /// Shared with every mode: named in alwaysVisible, or matching a shared prefix (Brave's web
     /// apps) and not pinned to one mode.
@@ -1513,10 +1522,23 @@ final class DockModel: ObservableObject {
         switches += 1
         refresh()   // the dock row and the mode buttons change now, with the click
         let going = leaving.filter { !wanted.contains($0.bundleIdentifier ?? "") }
-        // The apps that come back, then the front one on top, then the old mode leaves.
+        // The apps that come back and the front one on top first, and only once that one is up
+        // (or a fifth of a second has gone) the old mode leaves: hiding first showed the desktop for
+        // a moment (AeroSpace, layout/refresh.swift: "first unhide visible workspaces, then hide").
         Vis.set(back.flatMap(Apps.running), visible: true)
         if let bring { Apps.bringUp(bring) } else if let focus { Vis.focus(focus) }
-        Vis.set(going, visible: false)
+        switchCount += 1
+        let n = switchCount, since = Date()
+        func hideOld() {
+            guard n == switchCount else { return }   // a newer switch decides what shows now
+            let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            if focus != nil, front != focus, Date().timeIntervalSince(since) < 0.2 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { MainActor.assumeIsolated { hideOld() } }
+                return
+            }
+            Vis.set(going.filter { owner($0.bundleIdentifier ?? "") != state.current }, visible: false)
+        }
+        hideOld()
         // Under load the queues may take longer than the second above: stay quiet until they
         // have run, then sweep once the hides have settled.
         Vis.afterQueued { [weak self] in
@@ -1789,6 +1811,11 @@ struct DockView: View {
     @Environment(\.dockScale) private var k
     @ObservedObject var model: DockModel
     static let lift: CGFloat = 4
+    /// The row's height at size 1: an app icon with its dot (38 + 3 + 4). The row keeps it with no
+    /// app in it, so the dock is as tall in every mode and while a switch empties the row.
+    static let row: CGFloat = 45
+    /// From the lower screen edge to the top of the dock's body at size 1: lift, row and padding.
+    static let bodyTop: CGFloat = lift + row + 2 * 8
 
     var body: some View {
         HStack(spacing: 10 * k) {
@@ -1823,6 +1850,7 @@ struct DockView: View {
                 .contentShape(Rectangle())
                 .help("Drag to resize")
         }
+        .frame(minHeight: DockView.row * k)
         .padding(.horizontal, 10 * k)
         .padding(.vertical, 8 * k)
         .background(
@@ -2385,8 +2413,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The screen with the menu bar: the dock stays there rather than following focus between displays.
     var screen: NSScreen? { NSScreen.screens.first }
-    /// The top of the dock's visible body, under its scaled 14 pt of shadow room.
-    var barTop: CGFloat { panel.frame.maxY - 14 * model.scale }
+    /// The top of the dock's visible body, from its size alone: the panel's frame lags a resize
+    /// and changed with what the row held, and Rectangle is restarted for every new gap.
+    var barTop: CGFloat { (screen?.frame.minY ?? panel.frame.minY) + DockView.bodyTop * model.scale }
     let margin: CGFloat = 0   // windows end right on the dock's top edge
     var gapTimer: Timer?
     var pendingGap: CGFloat?
@@ -2457,7 +2486,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// dock. It reads the gap only at launch, so a changed gap restarts it, once the size settles.
     func syncRectangleGap() {
         guard model.active(\.rectangle), let vf = screen?.visibleFrame else { return }
-        let gap = max(0, (barTop - vf.minY + margin).rounded())
+        let gap = max(0, (barTop - vf.minY + margin).rounded(.up))
         let domain = "com.knollsoft.Rectangle"
         let now = (CFPreferencesCopyAppValue("screenEdgeGapBottom" as CFString, domain as CFString) as? NSNumber)?.doubleValue
         if let now, abs(now - gap) < 1 {   // already right: drop a change still waiting
