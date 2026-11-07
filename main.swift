@@ -2252,7 +2252,18 @@ final class ClickThroughHostingView<V: View>: NSHostingView<V> {
 final class Fits: @unchecked Sendable {
     var counts: [CFHashCode: Int] = [:]
 
-    func run(_ pid: pid_t, _ id: String, limit: CGFloat, span: ClosedRange<CGFloat>, highest: CGFloat) {
+    /// `from`, after a resize: the old limit. A window that ended there ends at the new one, taller
+    /// or shorter, and every window may be fitted three times again.
+    func run(_ pid: pid_t, _ id: String, limit: CGFloat, span: ClosedRange<CGFloat>, highest: CGFloat, from: CGFloat? = nil) {
+        if let from {
+            counts = [:]
+            for w in AX.windows(pid) {
+                guard AX.string(w, kAXSubroleAttribute) == kAXStandardWindowSubrole, AX.bool(w, "AXFullScreen") != true,
+                      AX.bool(w, kAXMinimizedAttribute) != true, let p = AX.point(w), let sz = AX.size(w),
+                      abs(p.y + sz.height - from) < 1.5, limit - p.y >= 200 else { continue }
+                if AX.setSize(w, CGSize(width: sz.width, height: limit - p.y)) { log("fit \(id) window to the resized dock") }
+            }
+        }
         for w in AX.windows(pid) {
             guard (counts[CFHash(w)] ?? 0) < 3, AX.string(w, kAXSubroleAttribute) == kAXStandardWindowSubrole,
                   AX.bool(w, "AXFullScreen") != true, AX.bool(w, kAXMinimizedAttribute) != true,
@@ -2399,7 +2410,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let x = min(max(left!, sf.minX), sf.maxX - size.width)
         let target = NSRect(x: x, y: sf.minY, width: size.width, height: size.height)
         if panel.frame != target { panel.setFrame(target, display: true) }
-        if !model.dragging { syncRectangleGap() }
+        if !model.dragging { syncRectangleGap(); fitAfterResize() }
+    }
+
+    /// After a resize, fit the front window to the dock's new top at once rather than at the next
+    /// two-second check. The drag's end can come while the button still reads as down: retried.
+    var fittedTop: CGFloat = -1
+    func fitAfterResize() {
+        guard barTop != fittedTop, !model.dragging else { return }
+        if fitting || NSEvent.pressedMouseButtons != 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { MainActor.assumeIsolated { self.fitAfterResize() } }
+            return
+        }
+        let old = fittedTop
+        fittedTop = barTop
+        fitWindows(from: old < 0 ? nil : old)
     }
 
     /// Each add-in on or off as the config has it; called at start, on a reload and from the menu.
@@ -2417,8 +2442,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and changed with what the row held, and Rectangle is restarted for every new gap.
     var barTop: CGFloat { (screen?.frame.minY ?? panel.frame.minY) + DockView.bodyTop * model.scale }
     let margin: CGFloat = 0   // windows end right on the dock's top edge
-    var gapTimer: Timer?
-    var pendingGap: CGFloat?
+    var restartingRectangle = false
     let fits = Fits()
     var fitting = false
     var beats = 0
@@ -2483,44 +2507,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Rectangle leaves the dock's height free at the bottom edge, so its layouts stop above the
-    /// dock. It reads the gap only at launch, so a changed gap restarts it, once the size settles.
+    /// dock. It reads the gap only at launch, so a new gap restarts it, at once: the gap comes from
+    /// the dock's size alone, never from a size it passes through, and a resize sets it when the
+    /// drag ends. A restart takes about 0.2 s (quit 50 ms, open 135 ms, 8 November); a gap that
+    /// changes during one is written and restarts it once more when it is up.
     func syncRectangleGap() {
-        guard model.active(\.rectangle), let vf = screen?.visibleFrame else { return }
+        guard model.active(\.rectangle), !restartingRectangle, let vf = screen?.visibleFrame else { return }
         let gap = max(0, (barTop - vf.minY + margin).rounded(.up))
-        let domain = "com.knollsoft.Rectangle"
-        let now = (CFPreferencesCopyAppValue("screenEdgeGapBottom" as CFString, domain as CFString) as? NSNumber)?.doubleValue
-        if let now, abs(now - gap) < 1 {   // already right: drop a change still waiting
-            gapTimer?.invalidate()
-            pendingGap = nil
-            return
-        }
-        guard gap != pendingGap else { return }
-        pendingGap = gap
-        gapTimer?.invalidate()
-        gapTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { _ in
-            MainActor.assumeIsolated {
-                guard self.model.active(\.rectangle) else { self.pendingGap = nil; return }
-                CFPreferencesSetAppValue("screenEdgeGapBottom" as CFString, NSNumber(value: Float(gap)), domain as CFString)
-                CFPreferencesAppSynchronize(domain as CFString)
-                self.pendingGap = nil
-                log("Rectangle bottom gap \(now.map { String($0) } ?? "unset") -> \(gap)")
-                guard let r = NSRunningApplication.runningApplications(withBundleIdentifier: "com.knollsoft.Rectangle").first,
-                      let url = r.bundleURL else { return }
-                r.terminate()
-                Task { @MainActor in   // reopen only once it has gone, or the open is lost on the old one
-                    for _ in 0..<50 where !r.isTerminated { try? await Task.sleep(for: .milliseconds(100)) }
-                    let c = NSWorkspace.OpenConfiguration()
-                    c.activates = false
-                    _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: c)
-                }
-            }
+        let domain = "com.knollsoft.Rectangle" as CFString
+        let now = (CFPreferencesCopyAppValue("screenEdgeGapBottom" as CFString, domain) as? NSNumber)?.doubleValue
+        if let now, abs(now - gap) < 1 { return }
+        CFPreferencesSetAppValue("screenEdgeGapBottom" as CFString, NSNumber(value: Float(gap)), domain)
+        CFPreferencesAppSynchronize(domain)
+        log("Rectangle bottom gap \(now.map { String($0) } ?? "unset") -> \(gap)")
+        guard let r = NSRunningApplication.runningApplications(withBundleIdentifier: "com.knollsoft.Rectangle").first,
+              let url = r.bundleURL else { return }
+        restartingRectangle = true
+        r.terminate()
+        Task { @MainActor in   // reopen only once it has gone, or the open is lost on the old one
+            for _ in 0..<500 where !r.isTerminated { try? await Task.sleep(for: .milliseconds(10)) }
+            let c = NSWorkspace.OpenConfiguration()
+            c.activates = false
+            _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: c)
+            restartingRectangle = false
+            syncRectangleGap()   // the size changed again meanwhile: once more
         }
     }
 
     /// Windows stay above the dock: twice a second, a standard window of the front app that reaches
     /// into the dock's band is shortened (or, when short or fixed in size, lifted) to end `margin`
     /// above it. Never while a mouse button is down, so a window being dragged is left to the user.
-    func fitWindows() {
+    func fitWindows(from oldTop: CGFloat? = nil) {
         let inset = 14 * model.scale
         guard !fitting, !hiddenForFullScreen, Vis.trusted, NSEvent.pressedMouseButtons == 0, !model.dragging, panel.frame.width > 2 * inset + 1,
               let app = NSWorkspace.shared.frontmostApplication, app != NSRunningApplication.current,
@@ -2531,7 +2548,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let pid = app.processIdentifier, id = app.bundleIdentifier ?? "?", fits = self.fits
         fitting = true   // one pass at a time: a slow app makes the timer skip, not pile up
         axQueue.async {
-            fits.run(pid, id, limit: limit, span: span, highest: highest)
+            fits.run(pid, id, limit: limit, span: span, highest: highest, from: oldTop.map { top - $0 - self.margin })
             DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.fitting = false } }
         }
     }
