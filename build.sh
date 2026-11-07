@@ -13,7 +13,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>WorkspaceBar</string>
   <key>CFBundleExecutable</key><string>WorkspaceBar</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleShortVersionString</key><string>0.0.1</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSAppleEventsUsageDescription</key><string>WorkspaceBar hides and shows apps when you switch modes.</string>
