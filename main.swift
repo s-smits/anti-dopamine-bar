@@ -551,29 +551,37 @@ enum Tiles {
         CGFloat((CFPreferencesCopyAppValue(key as CFString, "com.knollsoft.Rectangle" as CFString) as? NSNumber)?.doubleValue ?? 0)
     }
 
-    /// Rectangle's working area in Accessibility coordinates, y down from the top, and how far off
-    /// its grid an edge may be. Read on the main thread, where NSScreen lives.
+    /// Rectangle's working area on one screen in Accessibility coordinates, y down from the top of
+    /// the main screen, and how far off its grid an edge may be.
     struct Area { var l, r, t, b, tolerance: CGFloat }
 
-    @MainActor static func area() -> Area? {
-        guard Vis.trusted, let screen = NSScreen.screens.first else { return nil }
-        let vf = screen.visibleFrame, top = screen.frame.maxY
-        return Area(l: vf.minX + pref("screenEdgeGapLeft"), r: vf.maxX - pref("screenEdgeGapRight"),
-                    t: top - vf.maxY + pref("screenEdgeGapTop"), b: top - vf.minY - pref("screenEdgeGapBottom"),
-                    tolerance: pref("gapSize") + 8)
+    /// One area for each screen. Read on the main thread, where NSScreen lives. Rectangle's edge
+    /// gaps apply to the main screen alone when `screenEdgeGapsOnMainScreenOnly` is set, as the
+    /// Rectangle add-in sets it (Rectangle's ScreenDetection.swift: `self != NSScreen.screens.first`).
+    @MainActor static func areas() -> [Area] {
+        guard Vis.trusted, let main = NSScreen.screens.first else { return [] }
+        let top = main.frame.maxY, mainOnly = pref("screenEdgeGapsOnMainScreenOnly") != 0
+        return NSScreen.screens.map { s in
+            let vf = s.visibleFrame, g = s == main || !mainOnly ? 1 : 0 as CGFloat
+            return Area(l: vf.minX + g * pref("screenEdgeGapLeft"), r: vf.maxX - g * pref("screenEdgeGapRight"),
+                        t: top - vf.maxY + g * pref("screenEdgeGapTop"), b: top - vf.minY - g * pref("screenEdgeGapBottom"),
+                        tolerance: pref("gapSize") + 8)
+        }
     }
 
-    static func placed(_ pid: pid_t, _ a: Area) -> Bool {
-        let (l, r, t, b, tolerance) = (a.l, a.r, a.t, a.b, a.tolerance)
-        func onGrid(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat, _ fs: [CGFloat]) -> Bool {
-            fs.contains { abs(v - (lo + (hi - lo) * $0)) <= tolerance }
-        }
+    static func placed(_ pid: pid_t, _ areas: [Area]) -> Bool {
         let xs: [CGFloat] = [0, 1 / 4, 1 / 3, 1 / 2, 2 / 3, 3 / 4, 1], ys: [CGFloat] = [0, 1 / 2, 1]
         return AX.windows(pid).contains { w in
             guard AX.string(w, kAXSubroleAttribute) == kAXStandardWindowSubrole, AX.bool(w, kAXMinimizedAttribute) != true,
-                  let p = AX.point(w), let sz = AX.size(w), sz.width > (r - l) / 5 else { return false }
-            return onGrid(p.x, l, r, xs) && onGrid(p.x + sz.width, l, r, xs)
-                && onGrid(p.y, t, b, ys) && onGrid(p.y + sz.height, t, b, ys)
+                  let p = AX.point(w), let sz = AX.size(w) else { return false }
+            return areas.contains { a in
+                func onGrid(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat, _ fs: [CGFloat]) -> Bool {
+                    fs.contains { abs(v - (lo + (hi - lo) * $0)) <= a.tolerance }
+                }
+                return sz.width > (a.r - a.l) / 5
+                    && onGrid(p.x, a.l, a.r, xs) && onGrid(p.x + sz.width, a.l, a.r, xs)
+                    && onGrid(p.y, a.t, a.b, ys) && onGrid(p.y + sz.height, a.t, a.b, ys)
+            }
         }
     }
 }
@@ -1487,13 +1495,13 @@ final class DockModel: ObservableObject {
         // What comes back next time: the app in front and every app placed in a Rectangle field.
         // Measured on the Accessibility queue before the hides queued below, while every window is up.
         let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        let area = Tiles.area(), from = state.current
+        let areas = Tiles.areas(), from = state.current
         // Only the mode's own apps: one of another mode, showing for a moment, is not its to keep.
         let candidates = leaving.filter { owner($0.bundleIdentifier ?? "") == from }
             .map { ($0.processIdentifier, $0.bundleIdentifier ?? "") }
         let kept = Bag<String>()
         for c in candidates {
-            Vis.onApp(c.0) { if c.1 == front || (area.map { Tiles.placed(c.0, $0) } ?? false) { kept.add(c.1) } }
+            Vis.onApp(c.0) { if c.1 == front || Tiles.placed(c.0, areas) { kept.add(c.1) } }
         }
         Vis.afterQueued { [weak self] in
             guard let self else { return }
@@ -2254,13 +2262,15 @@ final class Fits: @unchecked Sendable {
 
     /// `from`, after a resize: the old limit. A window that ended there ends at the new one, taller
     /// or shorter, and every window may be fitted three times again.
-    func run(_ pid: pid_t, _ id: String, limit: CGFloat, span: ClosedRange<CGFloat>, highest: CGFloat, from: CGFloat? = nil) {
+    func run(_ pid: pid_t, _ id: String, limit: CGFloat, span: ClosedRange<CGFloat>, highest: CGFloat, from: CGFloat? = nil,
+             screenX: ClosedRange<CGFloat> = -.infinity ... .infinity) {
         if let from {
             counts = [:]
             for w in AX.windows(pid) {
                 guard AX.string(w, kAXSubroleAttribute) == kAXStandardWindowSubrole, AX.bool(w, "AXFullScreen") != true,
                       AX.bool(w, kAXMinimizedAttribute) != true, let p = AX.point(w), let sz = AX.size(w),
-                      abs(p.y + sz.height - from) < 1.5, limit - p.y >= 200 else { continue }
+                      abs(p.y + sz.height - from) < 1.5, limit - p.y >= 200,
+                      screenX.contains(p.x + sz.width / 2) else { continue }   // on the dock's screen
                 if AX.setSize(w, CGSize(width: sz.width, height: limit - p.y)) { log("fit \(id) window to the resized dock") }
             }
         }
@@ -2515,11 +2525,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard model.active(\.rectangle), !restartingRectangle, let vf = screen?.visibleFrame else { return }
         let gap = max(0, (barTop - vf.minY + margin).rounded(.up))
         let domain = "com.knollsoft.Rectangle" as CFString
-        let now = (CFPreferencesCopyAppValue("screenEdgeGapBottom" as CFString, domain) as? NSNumber)?.doubleValue
-        if let now, abs(now - gap) < 1 { return }
+        func pref(_ key: String) -> CFPropertyList? { CFPreferencesCopyAppValue(key as CFString, domain) }
+        let now = (pref("screenEdgeGapBottom") as? NSNumber)?.doubleValue
+        // The dock is on the main screen only, so the gap is too: Rectangle's main-screen-only
+        // switch, unless you gave other edges a gap of your own, which it would take off the
+        // other screens as well.
+        let ownGaps = ["screenEdgeGapTop", "screenEdgeGapLeft", "screenEdgeGapRight"].contains { ((pref($0) as? NSNumber)?.doubleValue ?? 0) != 0 }
+        let mainOnly = (pref("screenEdgeGapsOnMainScreenOnly") as? NSNumber)?.boolValue ?? false
+        let setMainOnly = !mainOnly && !ownGaps
+        guard now.map({ abs($0 - gap) >= 1 }) ?? true || setMainOnly else { return }
         CFPreferencesSetAppValue("screenEdgeGapBottom" as CFString, NSNumber(value: Float(gap)), domain)
+        if setMainOnly { CFPreferencesSetAppValue("screenEdgeGapsOnMainScreenOnly" as CFString, kCFBooleanTrue, domain) }
         CFPreferencesAppSynchronize(domain)
-        log("Rectangle bottom gap \(now.map { String($0) } ?? "unset") -> \(gap)")
+        log("Rectangle bottom gap \(now.map { String($0) } ?? "unset") -> \(gap)\(setMainOnly ? ", on the main screen only" : "")")
         guard let r = NSRunningApplication.runningApplications(withBundleIdentifier: "com.knollsoft.Rectangle").first,
               let url = r.bundleURL else { return }
         restartingRectangle = true
@@ -2545,10 +2563,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let limit = top - barTop - margin          // Accessibility measures y down from the top
         let span = CGFloat(panel.frame.minX + inset)...CGFloat(panel.frame.maxX - inset)
         let highest = top - (screen?.visibleFrame.maxY ?? top)
+        let screenX = (screen?.frame.minX ?? 0)...(screen?.frame.maxX ?? 0)
         let pid = app.processIdentifier, id = app.bundleIdentifier ?? "?", fits = self.fits
         fitting = true   // one pass at a time: a slow app makes the timer skip, not pile up
         axQueue.async {
-            fits.run(pid, id, limit: limit, span: span, highest: highest, from: oldTop.map { top - $0 - self.margin })
+            fits.run(pid, id, limit: limit, span: span, highest: highest, from: oldTop.map { top - $0 - self.margin }, screenX: screenX)
             DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.fitting = false } }
         }
     }
