@@ -1,4 +1,4 @@
-// WorkspaceBar: a dock at the bottom of the screen with three modes. Each app belongs to one mode.
+// Anti-Dopamine Bar: a dock at the bottom of the screen with three modes. Each app belongs to one mode.
 // Leaving a mode hides its apps; entering one brings back, all at once, its front app and the apps
 // that had a window in one of Rectangle's fields (a half, third, quarter or maximised), and leaves
 // the rest hidden until you ask for them (Cmd-Tab, or the mode's card on hover).
@@ -580,7 +580,7 @@ enum Tiles {
 
 /// macOS refuses NSRunningApplication.hide() and unhide() from an app that is not active (every
 /// call returned false on 3 November 2026). The Accessibility API does it in milliseconds once the
-/// user grants WorkspaceBar Accessibility; without that grant, System Events does it, but each call
+/// user grants Anti-Dopamine Bar Accessibility; without that grant, System Events does it, but each call
 /// took 1 to 3 s and let other app events run in the middle (a stale hide once hid Ghostty in its
 /// own mode), so it is only the fallback.
 @MainActor
@@ -1858,7 +1858,7 @@ struct DockView: View {
                 Button("Large") { model.setScale(1.25) }
             }
             Divider()
-            Button("Quit Workspace Bar") { NSApp.terminate(nil) }
+            Button("Quit Anti-Dopamine Bar") { NSApp.terminate(nil) }
         }
     }
 }

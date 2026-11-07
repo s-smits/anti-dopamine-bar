@@ -1,4 +1,4 @@
-# Workspace Bar
+# Anti-Dopamine Bar
 
 A small dock for macOS that splits your apps into modes. Each app belongs to one mode; switching
 hides the apps of the mode you leave and brings back, all at once, the ones of the mode you enter.
@@ -27,7 +27,7 @@ Needs macOS 14 or later and the Xcode command line tools (`xcode-select --instal
 
 ```sh
 ./build.sh               # builds, installs to ~/Applications and starts it at login (LaunchAgent)
-./build.sh --no-install  # only builds build/WorkspaceBar.app and the extension zips
+./build.sh --no-install  # only builds build/AntiDopamineBar.app and the extension zips
 ```
 
 On first start macOS asks for **Accessibility** (System Settings, Privacy & Security), which the

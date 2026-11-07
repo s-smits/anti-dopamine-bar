@@ -217,7 +217,7 @@ enum RaycastCore {
     /// on a key that does not match and then writes nothing, and changes only the rows it is sent.
     static let v2HelperSource = #"""
     'use strict';
-    // Workspace Bar: turns Raycast v2's app rows off and on through Raycast's own data core.
+    // Anti-Dopamine Bar: turns Raycast v2's app rows off and on through Raycast's own data core.
     const fs = require('fs'), path = require('path');
     const PLAIN = new Set(['id', 'extensionId', 'enabled', 'deviceGenerations', 'updatedAt']);
     const plain = (row) => Object.keys(row).every((k) => PLAIN.has(k) || row[k] == null || (k === 'deviceGenerations' && row[k] === '{}'));
