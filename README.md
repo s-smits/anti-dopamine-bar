@@ -1,13 +1,15 @@
 # Anti-Dopamine Bar
 
-A small macOS dock that keeps your work apps and your dopamine apps apart. Each app belongs to one
-mode; switching hides the apps of the mode you leave and brings back, all at once, the ones of the
-mode you enter.
+A small macOS dock that separates the applications you work in from the ones designed to hold
+your attention. Each application belongs to one mode; switching hides the applications of the
+mode you leave and restores, all at once, those of the mode you enter.
 
-The third mode, Socials, is where the feeds live, so it is locked. During a focus round it opens
-only after a wait; clicking shortens the wait, but you have to mean it. During a break it opens
-freely, and when the break ends you are back at work. No streaks, no badges, no confetti: those
-are dopamine too. Doe normaal.
+Feeds and video sites run on variable reward, which makes a quick look easy to start and hard to
+end. The third mode, Socials, therefore has a cost of entry: during a focus round it opens only
+after a short wait, which clicking can shorten but not skip. During a break it opens freely, and
+when the break ends the dock returns you to the mode you came from. The dock offers no streaks,
+badges or other rewards of its own, since those would be a source of dopamine too. It is, in
+short, a fairly *nuchter* piece of software: sober, practical, and not out to entertain you.
 
 - **Modes**: Profile 1, Profile 2 and Socials by default. Rename them, change their icons, colours
   and apps in `~/.config/workspace-bar/config.json`. An app you open joins the mode you are in;
