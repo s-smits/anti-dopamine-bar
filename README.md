@@ -50,7 +50,8 @@ dock needs to hide, show and focus windows and to read Cmd-Tab and Option-1 to 3
 signed ad hoc with a designated requirement on its identifier alone, so the permission survives
 rebuilds; build it yourself rather than running a binary someone sends you.
 
-The log is `~/Library/Logs/workspace-bar.log`. Tests (Socials' wait, Raycast handling): `tests/run.sh`.
+The log is `~/Library/Logs/workspace-bar.log`. Tests (Socials' wait, Raycast handling): `tests/run.sh`; what they cannot reach is checked by hand
+with `tests/sweep.md`.
 
 ## The browser extension
 
