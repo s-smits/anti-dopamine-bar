@@ -50,36 +50,30 @@ dock needs to hide, show and focus windows and to read Cmd-Tab and Option-1 to 3
 signed ad hoc with a designated requirement on its identifier alone, so the permission survives
 rebuilds; build it yourself rather than running a binary someone sends you.
 
-The log is `~/Library/Logs/workspace-bar.log`. Tests (Socials' wait, Raycast handling): `tests/run.sh`; what they cannot reach is checked by hand
-with `tests/sweep.md`.
+The log is `~/Library/Logs/workspace-bar.log`. `tests/run.sh` runs the tests; `tests/sweep.md` lists
+what is checked by hand.
 
 ## The browser extension
 
-`extension/` blocks social media and YouTube unless the dock is in Socials. The dock answers
-`http://127.0.0.1:47391/mode` (on this Mac only) with the mode and the sites to block: the
-config's `socialSites`, or the list in `modeserver.swift`. A blocked page shows a short notice and
-comes back by itself once you switch to Socials, or pause the timer. With the dock not running,
-nothing is blocked.
+The extension in `extension/` keeps social media and YouTube closed unless Socials is open: you
+are in Socials, on a break, or the timer is paused. A blocked page comes back by itself once it is.
+With the dock not running, nothing is blocked. The sites are `socialSites` in the config.
 
-The app keeps an up-to-date copy in `~/.config/workspace-bar/extensions` (the menu's **Show
-Browser Extension Folder** opens it):
+To install it, choose **Show Browser Extension Folder** in the dock's menu, then:
 
-- **Brave, Chrome, Edge, Arc**: open the browser's extensions page, turn on Developer mode,
-  choose **Load unpacked** and pick `extensions/chromium`.
-- **Firefox**: `about:debugging`, This Firefox, **Load Temporary Add-on**, and pick
-  `extensions/firefox/manifest.json` (temporary until Firefox restarts; a lasting install needs a
-  build signed by Mozilla).
+- **Brave, Chrome, Edge, Arc**: on the browser's extensions page, turn on Developer mode, choose
+  **Load unpacked** and pick the `chromium` folder.
+- **Firefox**: in `about:debugging`, choose **Load Temporary Add-on** and pick
+  `firefox/manifest.json`. It lasts until Firefox restarts.
 
-Each browser is its own add-in: switched off in the dock's menu, that browser blocks nothing.
+Each browser can be switched off on its own in the dock's menu.
 
 ## Notes
 
-- **Private macOS calls.** Turning off macOS's own Cmd-Tab and focusing another app's window use
-  calls Apple does not document (as AltTab does). They are looked up at start, so a macOS without
-  them only loses those features.
-- **Raycast 2** keeps its settings in an encrypted database. The add-in reads Raycast's key from
-  the Keychain (macOS asks once) and changes only the entries it added itself; switching the
-  add-in off gives them back.
+- Turning off macOS's own Cmd-Tab and focusing another app's window rely on macOS calls Apple does
+  not document, as AltTab does. Should a macOS version drop them, only those features stop working.
+- The Raycast add-in edits Raycast's settings, so macOS asks once to let it read Raycast's key. It
+  changes only what it added, and undoes that when switched off.
 
 ## Licence
 
