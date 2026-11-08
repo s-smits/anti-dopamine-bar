@@ -27,10 +27,13 @@ import SwiftUI
 
 // MARK: - Config and state
 
-/// A mode that waits: during a focus round it opens at the break, or at once with the timer paused.
-/// (A config's old `cutPerClick` and `floorSeconds` are read past: clicks no longer cut the wait.)
+/// A mode that waits: during a focus round it opens at the break, at once with the timer paused,
+/// or sooner by clicking. (A config's old `cutPerClick` and `floorSeconds` are read past: a third a
+/// click let it open after seconds of fast clicking.)
 struct Gate: Codable {
     var startMinutes: Double   // the wait when no focus round is running
+    static let cutPerClick = 0.15   // share of the remaining wait each further click removes
+    static let floorSeconds = 3.0   // clicking never brings the wait below this
 }
 
 struct Mode: Codable {
@@ -1244,8 +1247,9 @@ final class DockModel: ObservableObject {
         if name == state.current { return }   // the wait for a gated mode runs on wherever you are
         if ready == name { switchTo(name); return }
         // Left a gated mode a moment ago, by a click, a key or an app of another mode: going back
-        // within 10 s needs no wait and no warning clicks.
-        if let l = leftGated, l.mode == name, Date().timeIntervalSince(l.at) <= 10 {
+        // within 5 s needs no wait and no warning clicks. Later, during focus, it waits afresh for
+        // the round's time left; the pomodoro runs on.
+        if let l = leftGated, l.mode == name, Date().timeIntervalSince(l.at) <= Self.clickPause {
             log("  back to \(name) within \(Int(Date().timeIntervalSince(l.at))) s of leaving it")
             leftGated = nil
             nudges = 0
@@ -1259,10 +1263,10 @@ final class DockModel: ObservableObject {
         }
         // During focus each burst of clicks starts with three that only warn: the button blinks
         // red and a halo around the pomodoro says a round is on. Only the clicks after those start
-        // the wait. After 4 s without a click here the warning is back, so
+        // the wait, or cut it once it runs. After 5 s without a click here the warning is back, so
         // coming back later meets it again, a wait already running or not.
         if state.pomoPhase == "focus" {
-            if Date().timeIntervalSince(nudgedAt) > 4 { nudges = 0 }
+            if Date().timeIntervalSince(nudgedAt) > Self.clickPause { nudges = 0 }
             nudgedAt = Date()
             if nudges < 3 {
                 nudges += 1
@@ -1274,18 +1278,22 @@ final class DockModel: ObservableObject {
                 return
             }
         }
-        // The mode stays shut until the round's break: more clicks only warn (until 8 November each
-        // cut a third of the wait, and some fast clicking opened it in seconds). Pausing the timer
-        // is the way in before the break.
-        if pending == name {
+        // Each further click cuts some of the wait: 15% of what is left, so from 25 minutes clicking
+        // alone takes about 40 to get in. (A third a click opened it after some seconds of fast
+        // clicking, and 5% took about a hundred, too strict; both 8 November.)
+        if pending == name, let d = deadline {
+            let rem = max(0, d.timeIntervalSinceNow)
+            let next = min(rem, max(Gate.floorSeconds, rem * (1 - Gate.cutPerClick)))
+            deadline = Date().addingTimeInterval(next)
+            remaining = next
             clickedAt = Date()
-            denied[name, default: 0] += 1
             saveGate()
             return
         }
         cancelGate()
         // Asking for a gated mode starts a focus round if none is set; the wait is the round's
-        // time left, so left alone the mode opens when the break begins.
+        // time left, so left alone the mode opens when the break begins. Clicks cut only the
+        // wait; the pomodoro keeps its own time.
         if state.pomoPhase == nil { startPlan() }
         pending = name
         gateTotal = max(1, focusRunning ? pomoLeft : g.startMinutes * 60)
@@ -1310,7 +1318,21 @@ final class DockModel: ObservableObject {
         writeJSON(stateURL, state)
     }
 
+    /// A pause in clicking this long ends a burst: the warning clicks come back, a wait cut by
+    /// clicking goes back to the round's time left, and a wait that runs out stays shut.
+    static let clickPause: TimeInterval = 5
+
     func tick() {
+        // Only steady clicking gets in: 5 s without a click puts the wait back to the round's end,
+        // unless you asked for an app of the mode and under a minute is left: that runs out and opens it.
+        if pending != nil, let d = deadline, focusRunning, let end = state.pomoEnd, end.timeIntervalSince(d) > 1,
+           Date().timeIntervalSince(clickedAt) > Self.clickPause, !holdsApp(d) {
+            log("  no click for \(Int(Self.clickPause)) s: the wait for \(pending ?? "-") is back to \(Int(pomoLeft)) s")
+            deadline = end
+            gateTotal = max(1, pomoLeft)
+            remaining = gateTotal
+            saveGate()
+        }
         if let d = deadline, let name = pending {
             let r = max(0, d.timeIntervalSinceNow)
             if r <= 0 { waitOver(name); return }
@@ -1337,10 +1359,15 @@ final class DockModel: ObservableObject {
     }
 
     /// A wait ran out, or a break began during it. It opens the mode only while you are still
-    /// asking for it, with a click in the last 10 s. Otherwise you have gone back to work: the
+    /// asking for it, with a click in the last 5 s. Otherwise you have gone back to work: the
     /// mode stays shut and the next click opens it (during focus; a break opens it anyway).
+    /// An app asked for from the mode's card, with under a minute of the wait left at `deadline`.
+    func holdsApp(_ deadline: Date) -> Bool {
+        launchOnOpen != nil && launchOnOpen?.mode == pending && deadline.timeIntervalSince(clickedAt) < 60
+    }
+
     func waitOver(_ name: String) {
-        let asking = Date().timeIntervalSince(clickedAt) <= 10
+        let asking = Date().timeIntervalSince(clickedAt) <= Self.clickPause || deadline.map(holdsApp) == true
         let launch = launchOnOpen
         cancelGate()
         if asking {

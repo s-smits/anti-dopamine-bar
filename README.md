@@ -9,9 +9,10 @@ your attention. Each application belongs to one mode; switching hides the applic
 mode you leave and restores, all at once, those of the mode you enter.
 
 Feeds and video sites run on variable reward, which makes a quick look easy to start and hard to
-end. The third mode, Socials, therefore has a cost of entry: during a focus round it stays shut
-until the break, however often you click it. During a break, or with the timer paused, it opens
-freely, and when the break ends the dock returns you to the mode you came from. The dock offers no streaks,
+end. The third mode, Socials, therefore has a cost of entry: during a focus round it opens only
+after a wait that lasts until the break. Steady clicking shortens it, each click by 15%, and five
+seconds without a click puts it back. During a break, or with the timer paused, it opens freely,
+and when the break ends the dock returns you to the mode you came from. The dock offers no streaks,
 badges or other rewards of its own, since those would be a source of dopamine too. It is, in
 short, a fairly *nuchter* piece of software: sober, practical, and not out to entertain you.
 
@@ -55,7 +56,8 @@ The log is `~/Library/Logs/workspace-bar.log`. Tests (Raycast handling): `tests/
 `extension/` blocks social media and YouTube unless the dock is in Socials. The dock answers
 `http://127.0.0.1:47391/mode` (on this Mac only) with the mode and the sites to block: the
 config's `socialSites`, or the list in `modeserver.swift`. A blocked page shows a short notice and
-comes back by itself once you switch to Socials, or pause the timer. With the dock not running, nothing is blocked.
+comes back by itself once you switch to Socials, or pause the timer. With the dock not running,
+nothing is blocked.
 
 The app keeps an up-to-date copy in `~/.config/workspace-bar/extensions` (the menu's **Show
 Browser Extension Folder** opens it):

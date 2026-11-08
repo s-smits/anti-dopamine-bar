@@ -147,9 +147,14 @@ final class RaycastSync {
         guard let url = appURL() else { return }
         let c = NSWorkspace.OpenConfiguration()
         c.activates = false
-        // Raycast shows its window for a few seconds on every launch. Not launched hidden
-        // (`hides`): that hid the window, but Raycast's hotkey then opened nothing, unhidden or
-        // not, and an Escape sent to it did not close the window either (8 November).
+        // Raycast shows its window for a few seconds on a plain launch, so each switch into or out
+        // of Socials flashed it. Started as a login item it stays quiet, as it does at login. Not
+        // launched hidden (`hides`): that hid the window too, but Raycast's hotkey then opened nothing.
+        let e = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEOpenApplication),
+                                       targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID),
+                                       transactionID: AETransactionID(kAnyTransactionID))
+        e.setParam(NSAppleEventDescriptor(enumCode: OSType(keyAELaunchedAsLogInItem)), forKeyword: AEKeyword(keyAEPropData))
+        c.appleEvent = e
         c.addsToRecentItems = false
         NSWorkspace.shared.openApplication(at: url, configuration: c)
     }
