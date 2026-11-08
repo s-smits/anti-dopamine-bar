@@ -3,7 +3,7 @@ import Foundation
 /// The rules of a gated mode's wait (Socials), as plain values so tests/gate-tests.swift can try
 /// every case without a dock. DockModel keeps the state and does what these decide.
 enum GateCore {
-    static let cutPerClick = 0.15        // share of the remaining wait each further click removes
+    static let cutPerClick = 0.2         // share of the remaining wait each further click removes
     static let floorSeconds = 3.0        // clicking never brings the wait below this
     static let clickPause: TimeInterval = 5   // a pause this long ends a burst of clicks
     static let warnings = 3              // clicks that only warn, at the start of each burst in focus

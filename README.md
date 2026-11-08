@@ -46,7 +46,7 @@ back to where you were. During a focus round:
 
 - The first three clicks on Socials only warn you.
 - The fourth starts a wait that lasts until the break.
-- Every click after that cuts the wait by 15%. Stop clicking for 5 seconds and the full wait comes
+- Every click after that cuts the wait by 20%. Stop clicking for 5 seconds and the full wait comes
   back.
 - If you just left Socials, you can go back within 5 seconds without waiting.
 - An app you pick from Socials' card in the last minute of the wait shows beside the countdown, and

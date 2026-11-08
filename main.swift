@@ -1253,9 +1253,9 @@ final class DockModel: ObservableObject {
         // on wherever you are; going back within 5 s of leaving it needs no wait; a break or a pause
         // opens it at once. During focus each burst of clicks starts with three that only warn (the
         // button blinks red, a halo around the pomodoro says a round is on), and each click after
-        // those cuts 15% of the wait: from 25 minutes clicking alone takes about 40 to get in. (A
+        // those cuts 20% of the wait: from 25 minutes clicking alone takes about 30 to get in. (A
         // third a click opened it after seconds of fast clicking, and 5% took about a hundred,
-        // too strict; both 8 November.)
+        // too strict; both 8 November. 15%, about 40, was still too slow.)
         let now = Date()
         let outcome = GateCore.tap(.init(name: name, current: state.current, gated: mode.gate != nil, unblocked: unblocked,
                                          focus: state.pomoPhase == "focus", ready: ready, leftGated: leftGated,

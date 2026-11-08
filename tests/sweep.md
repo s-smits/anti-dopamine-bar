@@ -21,7 +21,7 @@ Last run: 8 November 2026, on 0.1.0, macOS 15. Every case passed.
 ## Socials' wait (focus round running)
 
 - [x] A click on Socials warns (a halo on the timer), three times a burst; the fourth starts the wait.
-- [x] Each further click cuts 15% of the wait left, never below 3 s.
+- [x] Each further click cuts 20% of the wait left, never below 3 s.
 - [x] 5 s without a click: the wait goes back to the round's end, and the warnings come back.
 - [x] Steady clicking (about two a second) gets in within half a minute.
 - [x] Leaving Socials and clicking it again within 5 s goes straight back; after that it warns.

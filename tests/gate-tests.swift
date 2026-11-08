@@ -46,8 +46,8 @@ func testTap() {
     eq(socials { $0.focus = false }, .start, "the timer stopped: the first click starts a round and the wait, no warning")
 
     // Cutting.
-    eq(socials { $0.nudges = 3; $0.nudgedAt = at(-1); $0.pending = "Socials"; $0.deadline = at(1000) }, .cut(850),
-       "a click cuts 15% of the wait left")
+    eq(socials { $0.nudges = 3; $0.nudgedAt = at(-1); $0.pending = "Socials"; $0.deadline = at(1000) }, .cut(800),
+       "a click cuts 20% of the wait left")
     eq(socials { $0.nudges = 3; $0.nudgedAt = at(-1); $0.pending = "Socials"; $0.deadline = at(-2) }, .cut(0),
        "a wait already over is not lengthened")
     eq(socials { $0.nudges = 0; $0.nudgedAt = at(-30); $0.pending = "Socials"; $0.deadline = at(1000) }, .nudge(1),
@@ -57,15 +57,15 @@ func testTap() {
 }
 
 func testCut() {
-    eq(GateCore.cut(1000), 850, "15% off")
+    eq(GateCore.cut(1000), 800, "20% off")
     eq(GateCore.cut(3.5), 3, "never below 3 s")
     eq(GateCore.cut(3), 3, "at the floor it stays")
     eq(GateCore.cut(2), 2, "under the floor it is not raised")
     eq(GateCore.cut(0), 0, "nothing left stays nothing")
-    // From a full round, clicking alone gets in after about 40 clicks, not a few and not a hundred.
+    // From a full round, clicking alone gets in after about 30 clicks, not a few and not a hundred.
     var left = 25 * 60.0, clicks = 0
     while left > GateCore.floorSeconds && clicks < 500 { left = GateCore.cut(left); clicks += 1 }
-    check((30...45).contains(clicks), "25 minutes take 30 to 45 clicks to reach the floor, took \(clicks)")
+    check((25...35).contains(clicks), "25 minutes take 25 to 35 clicks to reach the floor, took \(clicks)")
 }
 
 // MARK: - Going back
