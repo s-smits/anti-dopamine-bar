@@ -31,9 +31,7 @@ import SwiftUI
 /// or sooner by clicking. (A config's old `cutPerClick` and `floorSeconds` are read past: a third a
 /// click let it open after seconds of fast clicking.)
 struct Gate: Codable {
-    var startMinutes: Double   // the wait when no focus round is running
-    static let cutPerClick = 0.15   // share of the remaining wait each further click removes
-    static let floorSeconds = 3.0   // clicking never brings the wait below this
+    var startMinutes: Double   // the wait when no focus round is running (its rules: GateCore)
 }
 
 struct Mode: Codable {
@@ -139,6 +137,13 @@ struct SavedState: Codable, Equatable {
     var order: [String: [String]]?        // mode -> its apps in the order you put them; the card shows the first five
     var usage: [String: Use]?             // app -> how much it is used, fading by half every three days
     var sharedUsage: [String: [String: Use]]?  // mode -> shared app -> how much it is used in that mode
+    var rectangleOwn: RectangleOwn?       // Rectangle's settings before the dock first set its gap
+}
+
+/// What Rectangle had before the Rectangle add-in changed it, given back when the add-in is switched off.
+struct RectangleOwn: Codable, Equatable {
+    var gap: Double?        // screenEdgeGapBottom; nil: unset
+    var mainOnly: Bool?     // screenEdgeGapsOnMainScreenOnly; nil: unset
 }
 
 struct Use: Codable, Equatable {
@@ -1244,52 +1249,52 @@ final class DockModel: ObservableObject {
         guard !justDragged else { return }
         log("tap \(name) (in \(state.current), pending \(pending ?? "-"), pomo \(state.pomoPhase ?? "idle"))")
         guard let mode = config.modes.first(where: { $0.name == name }) else { return }
-        if name == state.current { return }   // the wait for a gated mode runs on wherever you are
-        if ready == name { switchTo(name); return }
-        // Left a gated mode a moment ago, by a click, a key or an app of another mode: going back
-        // within 5 s needs no wait and no warning clicks. Later, during focus, it waits afresh for
-        // the round's time left; the pomodoro runs on.
-        if let l = leftGated, l.mode == name, Date().timeIntervalSince(l.at) <= Self.clickPause {
-            log("  back to \(name) within \(Int(Date().timeIntervalSince(l.at))) s of leaving it")
+        // The rules are GateCore's (tests/gate-tests.swift). In short: the wait for a gated mode runs
+        // on wherever you are; going back within 5 s of leaving it needs no wait; a break or a pause
+        // opens it at once. During focus each burst of clicks starts with three that only warn (the
+        // button blinks red, a halo around the pomodoro says a round is on), and each click after
+        // those cuts 15% of the wait: from 25 minutes clicking alone takes about 40 to get in. (A
+        // third a click opened it after seconds of fast clicking, and 5% took about a hundred,
+        // too strict; both 8 November.)
+        let now = Date()
+        let outcome = GateCore.tap(.init(name: name, current: state.current, gated: mode.gate != nil, unblocked: unblocked,
+                                         focus: state.pomoPhase == "focus", ready: ready, leftGated: leftGated,
+                                         pending: pending, deadline: deadline, nudges: nudges, nudgedAt: nudgedAt, now: now))
+        if state.pomoPhase == "focus", mode.gate != nil, !unblocked, ![.stay, .open, .back].contains(outcome) {
+            if now.timeIntervalSince(nudgedAt) > GateCore.clickPause { nudges = 0 }
+            nudgedAt = now
+        }
+        switch outcome {
+        case .stay:
+            return
+        case .open:
+            if mode.gate != nil { cancelGate() }   // a break or a pause opens a gated mode at once
+            switchTo(name)
+            return
+        case .back:
+            log("  back to \(name) within \(Int(now.timeIntervalSince(leftGated?.at ?? now))) s of leaving it")
             leftGated = nil
             nudges = 0
             switchTo(name)
             return
-        }
-        guard let g = mode.gate, !unblocked else {
-            if mode.gate != nil { cancelGate() }   // a break or a pause opens a gated mode at once
-            switchTo(name)
+        case .nudge(let n):
+            nudges = n
+            nudge += 1
+            denied[name, default: 0] += 1
+            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+            log("  nudge \(n)/\(GateCore.warnings): focus has \(Int(pomoLeft)) s left")
+            if pending != name, launchOnOpen?.mode == name { launchOnOpen = nil }   // a warning holds no app for later
             return
-        }
-        // During focus each burst of clicks starts with three that only warn: the button blinks
-        // red and a halo around the pomodoro says a round is on. Only the clicks after those start
-        // the wait, or cut it once it runs. After 5 s without a click here the warning is back, so
-        // coming back later meets it again, a wait already running or not.
-        if state.pomoPhase == "focus" {
-            if Date().timeIntervalSince(nudgedAt) > Self.clickPause { nudges = 0 }
-            nudgedAt = Date()
-            if nudges < 3 {
-                nudges += 1
-                nudge += 1
-                denied[name, default: 0] += 1
-                NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-                log("  nudge \(nudges)/3: focus has \(Int(pomoLeft)) s left")
-                if pending != name, launchOnOpen?.mode == name { launchOnOpen = nil }   // a warning holds no app for later
-                return
-            }
-        }
-        // Each further click cuts some of the wait: 15% of what is left, so from 25 minutes clicking
-        // alone takes about 40 to get in. (A third a click opened it after some seconds of fast
-        // clicking, and 5% took about a hundred, too strict; both 8 November.)
-        if pending == name, let d = deadline {
-            let rem = max(0, d.timeIntervalSinceNow)
-            let next = min(rem, max(Gate.floorSeconds, rem * (1 - Gate.cutPerClick)))
-            deadline = Date().addingTimeInterval(next)
+        case .cut(let next):
+            deadline = now.addingTimeInterval(next)
             remaining = next
-            clickedAt = Date()
+            clickedAt = now
             saveGate()
             return
+        case .start:
+            break
         }
+        guard let g = mode.gate else { return }
         cancelGate()
         // Asking for a gated mode starts a focus round if none is set; the wait is the round's
         // time left, so left alone the mode opens when the break begins. Clicks cut only the
@@ -1318,16 +1323,15 @@ final class DockModel: ObservableObject {
         writeJSON(stateURL, state)
     }
 
-    /// A pause in clicking this long ends a burst: the warning clicks come back, a wait cut by
-    /// clicking goes back to the round's time left, and a wait that runs out stays shut.
-    static let clickPause: TimeInterval = 5
-
     func tick() {
+        // The round's end first: a wait that runs out with it is the break's to open.
+        if let end = state.pomoEnd, end.timeIntervalSinceNow <= 0 { pomoPhaseEnded() }
         // Only steady clicking gets in: 5 s without a click puts the wait back to the round's end,
         // unless you asked for an app of the mode and under a minute is left: that runs out and opens it.
-        if pending != nil, let d = deadline, focusRunning, let end = state.pomoEnd, end.timeIntervalSince(d) > 1,
-           Date().timeIntervalSince(clickedAt) > Self.clickPause, !holdsApp(d) {
-            log("  no click for \(Int(Self.clickPause)) s: the wait for \(pending ?? "-") is back to \(Int(pomoLeft)) s")
+        if pending != nil, let d = deadline,
+           GateCore.resets(deadline: d, roundEnd: state.pomoEnd, focusRunning: focusRunning, clickedAt: clickedAt,
+                           holds: holdsApp(d), now: Date()), let end = state.pomoEnd {
+            log("  no click for \(Int(GateCore.clickPause)) s: the wait for \(pending ?? "-") is back to \(Int(pomoLeft)) s")
             deadline = end
             gateTotal = max(1, pomoLeft)
             remaining = gateTotal
@@ -1339,7 +1343,6 @@ final class DockModel: ObservableObject {
             // Redraw only when the label or the ring would visibly move.
             if r.rounded(.up) != remaining.rounded(.up) || abs(r - remaining) / max(1, gateTotal) > 0.004 { remaining = r }
         }
-        if let end = state.pomoEnd, end.timeIntervalSinceNow <= 0 { pomoPhaseEnded() }
         // SwiftUI can drop a drag without ending it (the panel resized under it, say). Left so, the
         // dock would count as dragging for good and take no more clicks.
         if dragging, NSEvent.pressedMouseButtons & 1 == 0, Date().timeIntervalSince(dragSeen) > 0.5 {
@@ -1362,12 +1365,18 @@ final class DockModel: ObservableObject {
     /// asking for it, with a click in the last 5 s. Otherwise you have gone back to work: the
     /// mode stays shut and the next click opens it (during focus; a break opens it anyway).
     /// An app asked for from the mode's card, with under a minute of the wait left at `deadline`.
+    /// The app that opens with the gated mode when its wait runs out, if one is held.
+    var heldApp: String? {
+        guard let d = deadline, let l = launchOnOpen, l.mode == pending, holdsApp(d) else { return nil }
+        return l.id
+    }
+
     func holdsApp(_ deadline: Date) -> Bool {
-        launchOnOpen != nil && launchOnOpen?.mode == pending && deadline.timeIntervalSince(clickedAt) < 60
+        GateCore.holdsApp(launchFor: launchOnOpen?.mode, pending: pending, deadline: deadline, clickedAt: clickedAt)
     }
 
     func waitOver(_ name: String) {
-        let asking = Date().timeIntervalSince(clickedAt) <= Self.clickPause || deadline.map(holdsApp) == true
+        let asking = GateCore.asking(clickedAt: clickedAt, holds: deadline.map(holdsApp) == true, now: Date())
         let launch = launchOnOpen
         cancelGate()
         if asking {
@@ -1465,7 +1474,8 @@ final class DockModel: ObservableObject {
             if let next { Vis.focus(next) }
             return
         }
-        if config.modes.first(where: { $0.name == other })?.gate != nil && !unblocked {
+        if config.modes.first(where: { $0.name == other })?.gate != nil,
+           !GateCore.followAllowed(mode: other, unblocked: unblocked, ready: ready, leftGated: leftGated, now: Date()) {
             log("blocked \(id): \(other) waits for a break")
             Vis.set([app], visible: false)
             denied[other, default: 0] += 1   // opened from Raycast or elsewhere: its button blinks red
@@ -1601,6 +1611,7 @@ final class DockModel: ObservableObject {
             bring = bring ?? l.id
         }
         if let bring { expect(bring) }
+        if pending == target { cancelGate() }   // however you got there, the wait for it is over
         closeCard()
         if ready == target { ready = nil; saveGate() }
         leftGated = currentMode?.gate != nil && target != state.current ? (state.current, Date()) : nil
@@ -1728,8 +1739,9 @@ final class DockModel: ObservableObject {
             state.pomoEnd = Date().addingTimeInterval(left)
             state.pomoLeft = nil
             if state.pomoPhase == "focus" { leaveGatedMode() }   // as when a round of focus starts
-        } else {                                           // idle: start focusing
+        } else {                                           // idle: start focusing, out of a gated mode
             startPlan()
+            leaveGatedMode()
         }
         writeJSON(stateURL, state)
         ticks.second = 0
@@ -1766,13 +1778,12 @@ final class DockModel: ObservableObject {
 
     /// The plan is over, or the Mac slept past the next block: stop with the plan standing at `at`.
     func stopPlan(at block: Int) {
-        let wasBreak = state.pomoPhase == "break"
         state.pomoBlock = block
         pomoReset()
-        if wasBreak { leaveGatedMode() }
     }
 
-    /// Reset stops the round and the wait it set.
+    /// Reset stops the round and the wait it set. With the timer stopped a gated mode is shut (a
+    /// click on it starts a round and its wait), so Reset leaves it, as the end of the plan does.
     func pomoReset() {
         cancelGate()
         if ready != nil { ready = nil; saveGate() }
@@ -1780,6 +1791,7 @@ final class DockModel: ObservableObject {
         state.pomoEnd = nil
         state.pomoLeft = nil
         writeJSON(stateURL, state)
+        leaveGatedMode()
         onChange?()
     }
 
@@ -2091,10 +2103,22 @@ struct ModeButton: View {
         // The wait shows as a ring for 10 s after a click, or while the pointer is on the button;
         // otherwise the button looks as it always does, the wait still running underneath.
         _ = ticks.second
-        let ring = pending && (hover || Date().timeIntervalSince(model.clickedAt) < 10)
+        // An app asked for from the card in the wait's last minute opens with the mode: its icon
+        // stands beside the countdown until then, whether you click or not.
+        let held = pending ? model.heldApp : nil
+        let ring = pending && (held != nil || hover || Date().timeIntervalSince(model.clickedAt) < 10)
         return Button { model.tap(mode.name) } label: {
             Group {
-                if ring {
+                if let held {
+                    HStack(spacing: 5 * k) {
+                        Image(nsImage: appIcon(held)).resizable().interpolation(.high).frame(width: 26 * k, height: 26 * k)
+                        // The ring counts down the last minute, not the whole wait: it fills as the app comes.
+                        Ring(progress: 1 - model.remaining / GateCore.holdWithin, tint: tint, label: short(model.remaining), dim: false)
+                    }
+                    .padding(.leading, 5 * k)
+                    .background(Capsule().fill(tint.opacity(0.18)))
+                    .transition(.blurReplace)
+                } else if ring {
                     Ring(progress: progress, tint: tint, label: short(model.remaining), dim: false)
                         .transition(.blurReplace)
                 } else {
@@ -2110,6 +2134,7 @@ struct ModeButton: View {
                 }
             }
             .animation(.smooth(duration: 0.4), value: ring)
+            .animation(.smooth(duration: 0.4), value: held)
             // Turned away: two red pulses, about a second in all.
             .keyframeAnimator(initialValue: 0.0, trigger: model.denied[mode.name] ?? 0) { v, t in
                 v.background(Capsule().fill(Color(hex: "#E5484D").opacity(0.9 * t)))
@@ -2140,11 +2165,24 @@ struct ModeButton: View {
             if pending { Button("Stop Waiting for \(mode.name)") { model.cancelGate() } }
             if ready { Button("Shut \(mode.name) Again") { model.ready = nil; model.saveGate() } }
         }
-        .help(pending ? "\(mode.name) in \(long(model.remaining)): click to cut the wait (it opens by itself only within 10 s of a click)"
-              : (mode.gate == nil || active ? mode.name : "\(mode.name): free at the break, click to start the wait"))
+        .help(held.map { "\(CardIcon.name($0)) opens with \(mode.name) in \(long(model.remaining))" }
+              ?? (pending ? "\(mode.name) in \(long(model.remaining)): click to cut the wait (it opens by itself only within 5 s of a click)"
+              : (mode.gate == nil || active ? mode.name : "\(mode.name): free at the break, click to start the wait")))
     }
 
     var progress: Double { max(0, min(1, 1 - model.remaining / model.gateTotal)) }
+}
+
+/// An app's icon, looked up once: a drag redraws the card on every mouse move, a held app's
+/// countdown every second.
+@MainActor var appIcons: [String: NSImage] = [:]
+@MainActor func appIcon(_ id: String) -> NSImage {
+    if let i = appIcons[id] { return i }
+    let i = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id).map { NSWorkspace.shared.icon(forFile: $0.path) }
+        ?? Apps.running(id).first?.icon
+        ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil) ?? NSImage()
+    appIcons[id] = i
+    return i
 }
 
 func short(_ t: Double) -> String {
@@ -2235,16 +2273,7 @@ struct PreviewView: View {
         }
     }
 
-    /// Icons and names are looked up once: a drag redraws the card on every mouse move.
-    static var icons: [String: NSImage] = [:]
-    func icon(_ id: String) -> NSImage {
-        if let i = Self.icons[id] { return i }
-        let i = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id).map { NSWorkspace.shared.icon(forFile: $0.path) }
-            ?? Apps.running(id).first?.icon
-            ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil) ?? NSImage()
-        Self.icons[id] = i
-        return i
-    }
+    func icon(_ id: String) -> NSImage { appIcon(id) }
 }
 
 struct CardIcon: View {
@@ -2737,7 +2766,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKeys?.setEnabled(model.addIn(\.optionKeys))
         modeServer?.setEnabled(AddIns.browsers.contains { model.active($0.key) })
         raycastSync?.setEnabled(model.active(\.raycast))
-        if model.active(\.rectangle) { syncRectangleGap() }
+        if model.active(\.rectangle) { syncRectangleGap() } else { restoreRectangleGap() }
     }
 
     /// The screen with the menu bar: the dock stays there rather than following focus between displays.
@@ -2828,10 +2857,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mainOnly = (pref("screenEdgeGapsOnMainScreenOnly") as? NSNumber)?.boolValue ?? false
         let setMainOnly = !mainOnly && !ownGaps
         guard now.map({ abs($0 - gap) >= 1 }) ?? true || setMainOnly else { return }
+        if model.state.rectangleOwn == nil {
+            model.state.rectangleOwn = RectangleOwn(gap: now, mainOnly: (pref("screenEdgeGapsOnMainScreenOnly") as? NSNumber)?.boolValue)
+            writeJSON(stateURL, model.state)
+        }
         CFPreferencesSetAppValue("screenEdgeGapBottom" as CFString, NSNumber(value: Float(gap)), domain)
         if setMainOnly { CFPreferencesSetAppValue("screenEdgeGapsOnMainScreenOnly" as CFString, kCFBooleanTrue, domain) }
         CFPreferencesAppSynchronize(domain)
         log("Rectangle bottom gap \(now.map { String($0) } ?? "unset") -> \(gap)\(setMainOnly ? ", on the main screen only" : "")")
+        restartRectangle()
+    }
+
+    /// The add-in switched off: Rectangle gets back the gap it had before the dock set one. A gap
+    /// set by a dock from before this record is known by matching the dock's own, and is unset.
+    func restoreRectangleGap() {
+        guard !restartingRectangle, let vf = screen?.visibleFrame else { return }
+        let domain = "com.knollsoft.Rectangle" as CFString
+        let now = (CFPreferencesCopyAppValue("screenEdgeGapBottom" as CFString, domain) as? NSNumber)?.doubleValue
+        let own: RectangleOwn
+        if let o = model.state.rectangleOwn {
+            own = o
+        } else if let now, abs(now - max(0, (barTop - vf.minY + margin).rounded(.up))) < 1 {
+            own = RectangleOwn(gap: nil, mainOnly: nil)
+        } else {
+            return
+        }
+        func set(_ key: String, _ v: CFPropertyList?) { CFPreferencesSetAppValue(key as CFString, v, domain) }
+        set("screenEdgeGapBottom", own.gap.map { NSNumber(value: Float($0)) })
+        set("screenEdgeGapsOnMainScreenOnly", own.mainOnly.map { $0 ? kCFBooleanTrue : kCFBooleanFalse })
+        CFPreferencesAppSynchronize(domain)
+        model.state.rectangleOwn = nil
+        writeJSON(stateURL, model.state)
+        log("Rectangle bottom gap \(now.map { String($0) } ?? "unset") -> \(own.gap.map { String($0) } ?? "unset"), its own again")
+        restartRectangle()
+    }
+
+    /// Rectangle reads its gaps only at launch.
+    func restartRectangle() {
         guard let r = NSRunningApplication.runningApplications(withBundleIdentifier: "com.knollsoft.Rectangle").first,
               let url = r.bundleURL else { return }
         restartingRectangle = true

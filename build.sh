@@ -20,7 +20,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSAppleEventsUsageDescription</key><string>Anti-Dopamine Bar hides and shows apps when you switch modes.</string>
 </dict></plist>
 PLIST
-swiftc -O -swift-version 5 -parse-as-library main.swift switcher.swift hotkeys.swift modeserver.swift raycastcore.swift raycast.swift hooks.swift -o "$APP/Contents/MacOS/AntiDopamineBar"
+swiftc -O -swift-version 5 -parse-as-library main.swift switcher.swift hotkeys.swift modeserver.swift gatecore.swift raycastcore.swift raycast.swift hooks.swift -o "$APP/Contents/MacOS/AntiDopamineBar"
 # The browser extension, a folder for Chromium browsers and one for Firefox, which the app copies
 # to ~/.config/workspace-bar/extensions (ModeServer.extensionsFolder), and a zip of each.
 EXT="$APP/Contents/Resources/extensions"
