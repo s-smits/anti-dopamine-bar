@@ -30,6 +30,7 @@ short, a fairly *nuchter* piece of software: sober, practical, and not out to en
   - *Option-1 to 3*: the first three modes from the keyboard.
   - *Raycast*: Raycast leaves out Socials' apps outside Socials (Raycast 1 and 2).
   - *Rectangle*: Rectangle's layouts leave room for the dock; its layouts on an app's right-click.
+    Switched off, Rectangle gets its own bottom gap back.
   - *Brave, Chrome, Firefox*: the browser extension blocks social sites and YouTube outside
     Socials (below).
   - *Custom hooks*: your own scripts run on every switch (`~/.config/workspace-bar/hooks/`, see

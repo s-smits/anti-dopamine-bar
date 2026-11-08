@@ -14,7 +14,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>Anti-Dopamine Bar</string>
   <key>CFBundleExecutable</key><string>AntiDopamineBar</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.0.3</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSAppleEventsUsageDescription</key><string>Anti-Dopamine Bar hides and shows apps when you switch modes.</string>
