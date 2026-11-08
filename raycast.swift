@@ -147,6 +147,10 @@ final class RaycastSync {
         guard let url = appURL() else { return }
         let c = NSWorkspace.OpenConfiguration()
         c.activates = false
+        // Raycast shows its window on every launch, for up to 4 s, even one that does not
+        // activate it: each switch into or out of Socials flashed it. Launched hidden, it shows
+        // nothing until its hotkey.
+        c.hides = true
         c.addsToRecentItems = false
         NSWorkspace.shared.openApplication(at: url, configuration: c)
     }

@@ -12,8 +12,8 @@
 // only light a halo around the pomodoro, the next starts the wait, and each further click cuts it.
 // The wait runs on through mode switches and restarts. When it runs out it opens the mode only if
 // you clicked in the last 10 s; otherwise the mode waits, outlined, for your next click. The pomodoro
-// on the right runs focus and break in turn: during a break a gated mode opens at once, and when the
-// break ends the dock takes you back to the mode you came from.
+// on the right runs the day's plan, shown when you hover it: during a break a gated mode opens at
+// once, and when the break ends the dock takes you back to the mode you came from.
 //
 // Config: ~/.config/workspace-bar/config.json. Remembered apps: ~/.config/workspace-bar/state.json.
 
@@ -44,6 +44,25 @@ struct Mode: Codable {
 struct Pomodoro: Codable {
     var focusMinutes: Double
     var breakMinutes: Double
+
+    /// The day: sixteen rounds in four sets of four, each round with a break after it. A set's breaks
+    /// are short but its last, which is lunch after the second set and 15 minutes after the others.
+    var plan: [PomoBlock] {
+        let endings = [PomoBlock(kind: .rest, minutes: 15), PomoBlock(kind: .lunch, minutes: 45),
+                       PomoBlock(kind: .rest, minutes: 15), PomoBlock(kind: .rest, minutes: 15)]
+        return endings.flatMap { end -> [PomoBlock] in
+            (1...4).flatMap { round -> [PomoBlock] in
+                [PomoBlock(kind: .focus, minutes: focusMinutes),
+                 round < 4 ? PomoBlock(kind: .rest, minutes: breakMinutes) : end]
+            }
+        }
+    }
+}
+
+struct PomoBlock {
+    enum Kind { case focus, rest, lunch }
+    let kind: Kind
+    let minutes: Double
 }
 
 struct Config: Codable {
@@ -107,7 +126,8 @@ struct SavedState: Codable, Equatable {
     var pomoLeft: Double?                 // set while paused
     var pomoCount: Int?                   // focus rounds finished today
     var pomoDay: String?
-    var returnTo: String?                 // mode to go back to when a break ends
+    var pomoBlock: Int?                   // the plan's block running or, when idle, the next to run
+    var returnTo: String?                // mode to go back to when a break ends
     var shown: [String: [String]]?        // mode -> apps to bring back: in front or in a Rectangle field
     var gatePending: String?              // a gated mode being waited for, kept across restarts
     var gateDeadline: Date?
@@ -115,6 +135,7 @@ struct SavedState: Codable, Equatable {
     var gateReady: String?                // a gated mode whose wait ran out: the next click opens it
     var order: [String: [String]]?        // mode -> its apps in the order you put them; the card shows the first five
     var usage: [String: Use]?             // app -> how much it is used, fading by half every three days
+    var sharedUsage: [String: [String: Use]]?  // mode -> shared app -> how much it is used in that mode
 }
 
 struct Use: Codable, Equatable {
@@ -136,13 +157,17 @@ let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent
 let configURL = dir.appendingPathComponent("config.json")
 let stateURL = dir.appendingPathComponent("state.json")
 
+/// Shown in every mode's dock, whatever the config says. On 4 November the menu's "Move to" took it
+/// off the shared list for good, so the other two modes lost it and clicking it left them.
+let finderID = "com.apple.finder"
+
 let defaultConfig = Config(modes: [
     Mode(name: "Profile 1", icon: "1.circle.fill", color: "#2F6BD8", gate: nil, apps: nil),
     Mode(name: "Profile 2", icon: "2.circle.fill", color: "#D7891E", gate: nil, apps: nil),
     Mode(name: "Socials", icon: "bubble.left.and.bubble.right.fill", color: "#D9443F",
          gate: Gate(startMinutes: 25, cutPerClick: 1.0 / 3.0, floorSeconds: 3),
          apps: ["net.whatsapp.WhatsApp", "com.hnc.Discord", "com.tinyspeck.slackmacgap"]),
-], pomodoro: Pomodoro(focusMinutes: 25, breakMinutes: 5), alwaysVisible: ["com.apple.finder"],
+], pomodoro: Pomodoro(focusMinutes: 25, breakMinutes: 5), alwaysVisible: [finderID],
    sharedPrefixes: ["com.brave.Browser.app."])   // Brave's web apps: each has its own bundle id
 
 func readJSON<T: Decodable>(_ url: URL, _ type: T.Type) -> T? {
@@ -194,7 +219,9 @@ func writeJSON<T: Encodable>(_ url: URL, _ value: T) {
 
 func loadConfig() -> Config {
     if !FileManager.default.fileExists(atPath: configURL.path) { writeJSON(configURL, defaultConfig); return defaultConfig }
-    return readJSON(configURL, Config.self) ?? defaultConfig
+    var config = readJSON(configURL, Config.self) ?? defaultConfig
+    if !config.alwaysVisible.contains(finderID) { config.alwaysVisible.insert(finderID, at: 0) }
+    return config
 }
 
 /// A repeating main-thread timer with 10% slack, so that macOS can wake the dock together with
@@ -780,6 +807,8 @@ final class Ticks: ObservableObject {
     @Published var second = 0                // the pomodoro's clock
 }
 
+let pomoCard = "pomodoro plan"   // what `hovered` holds while the card shows the plan instead of a mode
+
 @MainActor
 final class DockModel: ObservableObject {
     @Published var config = loadConfig()
@@ -806,6 +835,8 @@ final class DockModel: ObservableObject {
     var previewSize: CGSize = .zero
     var onPreviewSize: (() -> Void)?
     var modeFrames: [String: CGRect] = [:]   // each mode button, in the dock's coordinates
+    var pomoFrame: CGRect?                   // the pomodoro, whose card shows the day's plan
+    func cardFrame(_ name: String) -> CGRect? { name == pomoCard ? pomoFrame : modeFrames[name] }
     var onHover: ((String?) -> Void)?
     var hoverWork: DispatchWorkItem?
 
@@ -890,17 +921,20 @@ final class DockModel: ObservableObject {
     var launchOnOpen: (mode: String, id: String)?
 
     /// A mode's apps: first in the order you put them on its card, then the one it last had in
-    /// front, the running ones and the rest.
+    /// front, the running ones and the rest. A shared app is one of them where it is on the card's
+    /// saved order or has been used there enough: three uses, as an app needs to overtake another.
     func ordered(_ mode: String) -> [String] {
         // Every dock icon's menu asks on each redraw: kept until the model or the running apps change.
         if let known = orderCache[mode] { return known }
+        let saved = state.order?[mode] ?? []
+        let earned = (state.sharedUsage?[mode]?.keys.sorted() ?? []).filter { isShared($0) && score($0, mode) >= 3 }
         let ids = (state.apps[mode] ?? []) + (config.modes.first { $0.name == mode }?.apps ?? [])
+            + saved.filter(isShared) + earned
         var seen = Set<String>()
         let unique = ids.filter { seen.insert($0).inserted }
-        let saved = state.order?[mode] ?? []
         let running = Set(regularApps.lazy.filter { !Apps.headless($0.processIdentifier) }.compactMap(\.bundleIdentifier))
         let key = { (id: String) in
-            (saved.firstIndex(of: id) ?? saved.count, -self.score(id), id == self.state.focus[mode] ? 0 : 1,
+            (saved.firstIndex(of: id) ?? saved.count, -self.score(id, mode), id == self.state.focus[mode] ? 0 : 1,
              running.contains(id) ? 0 : 1)
         }
         let keyed = unique.enumerated().map { (key: key($0.element), at: $0.offset, id: $0.element) }
@@ -951,8 +985,26 @@ final class DockModel: ObservableObject {
 
     static let halfLife: Double = 3 * 86400
 
-    func score(_ id: String, now: Date = Date()) -> Double {
-        guard let u = state.usage?[id] else { return 0 }
+    /// An app of one mode has one count. A shared app has one for each mode, so it can earn a place
+    /// on one mode's card and not on another's.
+    func use(_ id: String, _ mode: String) -> Use? {
+        isShared(id) ? state.sharedUsage?[mode]?[id] : state.usage?[id]
+    }
+
+    func setUse(_ use: Use?, _ id: String, _ mode: String) {
+        if isShared(id) {
+            var shared = state.sharedUsage ?? [:]
+            shared[mode, default: [:]][id] = use
+            state.sharedUsage = shared
+        } else {
+            var usage = state.usage ?? [:]
+            usage[id] = use
+            state.usage = usage
+        }
+    }
+
+    func score(_ id: String, _ mode: String, now: Date = Date()) -> Double {
+        guard let u = use(id, mode) else { return 0 }
         return u.score * pow(0.5, now.timeIntervalSince(u.at) / DockModel.halfLife)
     }
 
@@ -960,16 +1012,14 @@ final class DockModel: ObservableObject {
     /// an app used well more than the least used of its mode's top five (twice as much, and three
     /// uses more) takes that one's place; the other four keep theirs.
     func used(_ id: String) {
-        guard let mode = owner(id) else { return }
+        guard let mode = isShared(id) ? state.current : owner(id) else { return }
         let now = Date()
-        if let u = state.usage?[id], now.timeIntervalSince(u.at) < 120 { return }
-        var usage = state.usage ?? [:]
-        usage[id] = Use(score: score(id, now: now) + 1, at: now)
-        state.usage = usage
+        if let u = use(id, mode), now.timeIntervalSince(u.at) < 120 { return }
+        setUse(Use(score: score(id, mode, now: now) + 1, at: now), id, mode)
         var list = ordered(mode)
         if let i = list.firstIndex(of: id), i >= 5,
-           let weakest = list.indices.prefix(5).min(by: { score(list[$0]) < score(list[$1]) }),
-           score(id) >= 2 * score(list[weakest]) + 3 {
+           let weakest = list.indices.prefix(5).min(by: { score(list[$0], mode) < score(list[$1], mode) }),
+           score(id, mode) >= 2 * score(list[weakest], mode) + 3 {
             let out = list[weakest]
             list.remove(at: i)
             list[weakest] = id
@@ -982,17 +1032,24 @@ final class DockModel: ObservableObject {
     }
 
     /// Put an app in its mode's top five, as the fifth, or take it out to the end of the list. One
-    /// taken out starts its use over, so it climbs back only by being used anew.
+    /// taken out starts its use over, so it climbs back only by being used anew. A shared app taken
+    /// out leaves the mode's list altogether.
     func setOnCard(_ id: String, _ mode: String, _ on: Bool) {
-        if !on { state.usage?[id] = nil }
+        if !on { setUse(nil, id, mode) }
         var list = ordered(mode).filter { $0 != id }
-        if on { list.insert(id, at: min(4, list.count)) } else { list.append(id) }
+        if on { list.insert(id, at: min(4, list.count)) } else if !isShared(id) { list.append(id) }
         saveOrder(mode, list)
     }
 
+    /// Apps moved to another mode keep their place in this one's list, so moving one back puts it
+    /// where it was. A shared app taken off the card has no other mode, and leaves.
     func saveOrder(_ mode: String, _ list: [String]) {
         var o = state.order ?? [:]
-        o[mode] = list
+        var next = list
+        for (i, id) in (o[mode] ?? []).enumerated() where !next.contains(id) {
+            if let other = owner(id), other != mode { next.insert(id, at: min(i, next.count)) }
+        }
+        o[mode] = next
         state.order = o
         writeJSON(stateURL, state)
     }
@@ -1001,6 +1058,7 @@ final class DockModel: ObservableObject {
         let config = loadConfig()
         var s = readJSON(stateURL, SavedState.self) ?? SavedState(current: config.modes.first?.name ?? "")
         if !config.modes.contains(where: { $0.name == s.current }) { s.current = config.modes.first?.name ?? "" }
+        for key in s.apps.keys { s.apps[key]?.removeAll(where: config.alwaysVisible.contains) }   // a shared app has no mode
         state = s
         scale = s.scale ?? 1
         ready = s.gateReady.flatMap { r in config.modes.contains { $0.name == r } ? r : nil }
@@ -1215,7 +1273,7 @@ final class DockModel: ObservableObject {
         // Asking for a gated mode starts a focus round if none is set, and a running focus round
         // sets the wait: left alone, the mode opens when the break begins. Clicks cut only the
         // wait; the pomodoro keeps its own time.
-        if state.pomoPhase == nil { begin("focus") }
+        if state.pomoPhase == nil { startPlan() }
         let focusLeft = state.pomoPhase == "focus" && pomoRunning ? pomoLeft : .infinity
         pending = name
         gateTotal = max(1, min(g.startMinutes * 60, focusLeft))
@@ -1323,14 +1381,18 @@ final class DockModel: ObservableObject {
     var fallback: pid_t?
     var lastFront: NSRunningApplication?   // the app in front before this activation
     var launchedAt: [pid_t: Date] = [:]    // when each app launched, while it runs
+    var afterQuit: Bool { Date().timeIntervalSince(quitAt) < 1.5 || lastFront?.isTerminated == true }
     func justLaunched(_ app: NSRunningApplication) -> Bool {
         Date().timeIntervalSince(launchedAt[app.processIdentifier] ?? .distantPast) < 5
     }
 
     /// You brought an app forward (Cmd-Tab, the macOS Dock, a notification): follow it to its
     /// mode. A gated mode's app is hidden again instead, unless the pomodoro is on a break.
+    /// A shared app has no mode to follow: it only counts as used in the mode you are in, unless
+    /// macOS brought it up, as a switch's hides and a quit do with Finder.
     func activated(_ app: NSRunningApplication, recheck: Bool = true) {
-        guard let id = tracked(app), !app.isTerminated else { return }
+        let shared = app.activationPolicy == .regular && isShared(app.bundleIdentifier ?? "")
+        guard let id = shared ? app.bundleIdentifier : tracked(app), !app.isTerminated else { return }
         // Only the app in front now counts: an activation told late, after another app took the
         // front, is old news. The app's own isHidden is no guide, as it can lag its activation.
         if NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier {
@@ -1340,6 +1402,10 @@ final class DockModel: ObservableObject {
                     self.activated(app, recheck: false)
                 }
             }
+            return
+        }
+        if shared {
+            if expecting(id) || (Date() >= quietUntil && !afterQuit) { used(id) }
             return
         }
         guard let other = owner(id) else {
@@ -1353,8 +1419,7 @@ final class DockModel: ObservableObject {
         if app.processIdentifier == fallback { return }
         // The quit may be told before or after the app it hands the front to. An app just launched,
         // or one the dock is opening, is never macOS's pick: you asked for it.
-        if !justLaunched(app), !expecting(id),
-           Date().timeIntervalSince(quitAt) < 1.5 || lastFront?.isTerminated == true {
+        if !justLaunched(app), !expecting(id), afterQuit {
             fallback = app.processIdentifier
             let next = visibleApps().last { owner($0.bundleIdentifier ?? "") == state.current }
             log("after a quit macOS brought \(id) forward: staying in \(state.current)\(next.map { ", focus \($0.bundleIdentifier ?? "?")" } ?? "")")
@@ -1443,6 +1508,7 @@ final class DockModel: ObservableObject {
     /// Move an app to another mode for good: it leaves the config's fixed list if it was on one.
     func moveApp(_ app: NSRunningApplication, to mode: String) {
         guard let id = app.bundleIdentifier else { return }
+        let onCard = owner(id).map { preview($0).contains(id) } ?? false   // before a pin changes the owner
         if config.alwaysVisible.contains(id) {
             config.alwaysVisible.removeAll { $0 == id }
             writeJSON(configURL, config)
@@ -1454,19 +1520,33 @@ final class DockModel: ObservableObject {
         }
         log("move \(id) to \(mode)")
         claim(id, for: mode)
-        writeJSON(stateURL, state)
-        if mode != state.current { Vis.set([app], visible: false) }
+        // Its old place on this mode's card comes back with it; failing that, an app from the old
+        // card goes on this one, as the fifth, not last behind every app ordered here.
+        if onCard && !preview(mode).contains(id) { setOnCard(id, mode, true) } else { writeJSON(stateURL, state) }
         refresh()
+    }
+
+    /// The running apps the dock menu can share with every mode, or take back: one row an app.
+    func shareable() -> [NSRunningApplication] {
+        var seen = Set<String>()
+        return regularApps.filter {
+            guard !$0.isTerminated, let id = $0.bundleIdentifier, id != finderID, $0.activationPolicy == .regular,
+                  $0.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+                  !Apps.headless($0.processIdentifier) else { return false }
+            return seen.insert(id).inserted
+        }.sorted { ($0.localizedName ?? "").localizedCaseInsensitiveCompare($1.localizedName ?? "") == .orderedAscending }
     }
 
     /// Share an app with every mode.
     func share(_ app: NSRunningApplication) {
         guard let id = app.bundleIdentifier, !isShared(id) else { return }
+        let from = owner(id), count = state.usage?[id]
         pin(id, to: nil)
         if !matchesSharedPrefix(id) {
             config.alwaysVisible.append(id)
             writeJSON(configURL, config)
         }
+        if let from, let count { setUse(count, id, from) }   // its use so far was all in that mode
         for key in state.apps.keys { state.apps[key]?.removeAll { $0 == id } }
         writeJSON(stateURL, state)
         log("share \(id) with every mode")
@@ -1492,15 +1572,17 @@ final class DockModel: ObservableObject {
             state.focus[state.current] = f
         }
         let wanted = Set((state.apps[target] ?? []) + (config.modes.first { $0.name == target }?.apps ?? []))
-        // What comes back next time: the app in front and every app placed in a Rectangle field.
-        // Measured on the Accessibility queue before the hides queued below, while every window is up.
+        // What comes back next time: every app showing, or with Rectangle the app in front and
+        // every app placed in a Rectangle field. Measured on the Accessibility queue before the
+        // hides queued below, while every window is up.
         let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        let areas = Tiles.areas(), from = state.current
+        let tiles = active(\.rectangle), areas = tiles ? Tiles.areas() : [], from = state.current
         // Only the mode's own apps: one of another mode, showing for a moment, is not its to keep.
         let candidates = leaving.filter { owner($0.bundleIdentifier ?? "") == from }
             .map { ($0.processIdentifier, $0.bundleIdentifier ?? "") }
         let kept = Bag<String>()
         for c in candidates {
+            if !tiles { kept.add(c.1); continue }
             Vis.onApp(c.0) { if c.1 == front || Tiles.placed(c.0, areas) { kept.add(c.1) } }
         }
         Vis.afterQueued { [weak self] in
@@ -1577,7 +1659,10 @@ final class DockModel: ObservableObject {
     var pomo: Pomodoro { config.pomodoro ?? Pomodoro(focusMinutes: 25, breakMinutes: 5) }
     var onBreak: Bool { state.pomoPhase == "break" && state.pomoEnd != nil }
     var pomoRunning: Bool { state.pomoEnd != nil }
-    var pomoLength: Double { (state.pomoPhase == "break" ? pomo.breakMinutes : pomo.focusMinutes) * 60 }
+    var plan: [PomoBlock] { pomo.plan }
+    /// Where the plan stands. Past the last block it is done; idle on a later day it starts over.
+    var pomoBlock: Int { state.pomoPhase == nil && state.pomoDay != today ? 0 : state.pomoBlock ?? 0 }
+    var pomoLength: Double { plan[pomoBlock].minutes * 60 }
     var pomoLeft: Double {
         if let end = state.pomoEnd { return max(0, end.timeIntervalSinceNow) }
         return state.pomoLeft ?? pomo.focusMinutes * 60
@@ -1598,26 +1683,47 @@ final class DockModel: ObservableObject {
             state.pomoEnd = Date().addingTimeInterval(left)
             state.pomoLeft = nil
         } else {                                           // idle: start focusing
-            begin("focus")
+            startPlan()
         }
         writeJSON(stateURL, state)
         ticks.second = 0
     }
 
-    func begin(_ phase: String) {
+    /// From idle: the plan's next focus round. A new day or a finished plan starts from the first.
+    func startPlan() {
+        let from = pomoBlock
+        state.pomoCount = pomoCount   // before the day moves: yesterday's rounds are not today's
+        state.pomoDay = today
+        begin(plan[from...].firstIndex { $0.kind == .focus } ?? 0)
+    }
+
+    func begin(_ block: Int) {
         if ready != nil { ready = nil; saveGate() }   // an opened mode lasts to the end of its round
-        if phase == "focus" { leftGated = nil }       // and so does the way straight back into it
-        state.pomoPhase = phase
+        state.pomoBlock = block
+        state.pomoPhase = plan[block].kind == .focus ? "focus" : "break"
+        if state.pomoPhase == "focus" { leftGated = nil }   // and so does the way straight back into it
         state.pomoLeft = nil
-        state.pomoEnd = Date().addingTimeInterval((phase == "break" ? pomo.breakMinutes : pomo.focusMinutes) * 60)
+        state.pomoEnd = Date().addingTimeInterval(plan[block].minutes * 60)
         writeJSON(stateURL, state)
         onChange?()
     }
 
+    /// Skipping to a break frees a gated mode and leaves you where you are, even with a click on it
+    /// a moment ago: the wait just ends, and during the break a click opens the mode at once.
     func pomoSkip() {
+        let next = pomoBlock + 1
+        log("pomodoro: skip from block \(pomoBlock) of \(plan.count) (in \(state.current), pending \(pending ?? "-"))")
+        guard next < plan.count else { stopPlan(at: next); return }
+        begin(next)
+        if plan[next].kind == .focus { leaveGatedMode() } else { cancelGate() }
+    }
+
+    /// The plan is over, or the Mac slept past the next block: stop with the plan standing at `at`.
+    func stopPlan(at block: Int) {
         let wasBreak = state.pomoPhase == "break"
-        begin(wasBreak ? "focus" : "break")
-        if wasBreak { leaveGatedMode() } else if let p = pending { waitOver(p) }
+        state.pomoBlock = block
+        pomoReset()
+        if wasBreak { leaveGatedMode() }
     }
 
     /// Reset stops the round and the wait it set.
@@ -1632,29 +1738,26 @@ final class DockModel: ObservableObject {
     }
 
     func pomoPhaseEnded() {
-        // The Mac slept through the end and the next phase would be over too: stop instead of
-        // starting a round nobody is there for.
-        let overdue = -(state.pomoEnd?.timeIntervalSinceNow ?? 0)
-        let next = (state.pomoPhase == "break" ? pomo.focusMinutes : pomo.breakMinutes) * 60
-        if overdue > next {
-            if state.pomoPhase == "focus" { state.pomoCount = pomoCount + 1; state.pomoDay = today }
-            let wasBreak = state.pomoPhase == "break"
-            log("pomodoro: phase ended \(Int(overdue)) s ago, stopping")
-            pomoReset()
-            if wasBreak { leaveGatedMode() }
+        let next = pomoBlock + 1
+        if state.pomoPhase == "focus" { state.pomoCount = pomoCount + 1; state.pomoDay = today }
+        guard next < plan.count else {
+            log("pomodoro: the day's plan is done")
+            NSSound(named: "Submarine")?.play()
+            stopPlan(at: next)
             return
         }
-        if state.pomoPhase == "break" {
-            NSSound(named: "Submarine")?.play()
-            begin("focus")
-            leaveGatedMode()
-        } else {
-            NSSound(named: "Glass")?.play()
-            state.pomoCount = pomoCount + 1
-            state.pomoDay = today
-            begin("break")
-            if let p = pending { waitOver(p) }   // the break ends a wait
+        // The Mac slept through the end and the next block would be over too: stop instead of
+        // starting a round nobody is there for.
+        let overdue = -(state.pomoEnd?.timeIntervalSinceNow ?? 0)
+        if overdue > plan[next].minutes * 60 {
+            log("pomodoro: block ended \(Int(overdue)) s ago, stopping")
+            stopPlan(at: next)
+            return
         }
+        let toFocus = plan[next].kind == .focus
+        NSSound(named: toFocus ? "Submarine" : "Glass")?.play()
+        begin(next)
+        if toFocus { leaveGatedMode() } else if let p = pending { waitOver(p) }   // the break ends a wait
     }
 
     /// A break is over: leave a gated mode for the one you came from.
@@ -1888,6 +1991,13 @@ struct DockView: View {
                 }
                 Button("Open Hooks Folder") { NSWorkspace.shared.open(Hooks.folder()) }
             }
+            Menu("Apps in All Modes") {
+                ForEach(model.shareable(), id: \.processIdentifier) { app in
+                    Toggle(app.localizedName ?? app.bundleIdentifier ?? "?", isOn: Binding(
+                        get: { model.isShared(app.bundleIdentifier ?? "") },
+                        set: { $0 ? model.share(app) : model.moveApp(app, to: model.state.current) }))
+                }
+            }
             Menu("Size") {
                 Button("Small") { model.setScale(0.8) }
                 Button("Normal") { model.setScale(1) }
@@ -2032,9 +2142,11 @@ struct PreviewView: View {
     var body: some View {
         let mode = model.hovered ?? ""
         let drag = card.drag
-        let ids = drag?.ids ?? model.preview(mode)
+        let ids = mode == pomoCard ? [] : drag?.ids ?? model.preview(mode)
         VStack(spacing: 6) {
-            if ids.isEmpty {
+            if mode == pomoCard {
+                PomoPlanView(model: model, ticks: model.ticks)
+            } else if ids.isEmpty {
                 Text("No apps yet").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                     .frame(height: 30)
             } else {
@@ -2053,10 +2165,16 @@ struct PreviewView: View {
                 }
                 .coordinateSpace(name: "card")
             }
-            Text(mode).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary)
+            if mode != pomoCard {
+                Text(mode).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(mode == pomoCard ? 6 : 0)
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+            if mode == pomoCard { PopoverBlur().clipShape(shape) } else { shape.fill(.ultraThinMaterial) }
+        }
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
             .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
@@ -2120,6 +2238,115 @@ struct CardIcon: View {
             .contextMenu {
                 Button("Remove from \(mode)'s Top 5") { model.setOnCard(id, mode, false) }
             }
+    }
+}
+
+/// The dock never takes focus, and SwiftUI's material fades in a window without it, which left the
+/// plan's text unreadable over a light page: this is the popover's own blur, kept active.
+struct PopoverBlur: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .popover
+        view.blendingMode = .behindWindow
+        view.state = .active
+        return view
+    }
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+}
+
+/// The day's plan: a row of capsules for each set, as wide as they are long. What has passed is
+/// filled, the block running fills as it runs, and what is ahead is a plain track.
+struct PomoPlanView: View {
+    @ObservedObject var model: DockModel
+    @ObservedObject var ticks: Ticks
+    static let focusTint = Color(hex: "#E8663D")   // the pomodoro ring's two colours
+    static let breakTint = Color(hex: "#34A853")
+
+    var body: some View {
+        _ = ticks.second
+        let plan = model.plan
+        let done = model.pomoBlock >= plan.count
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title(plan)).font(.system(size: 13, weight: .semibold))
+                    Text(subtitle(done)).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 16)
+                if !done {
+                    Text(long(model.pomoLeft))
+                        .font(.system(size: 24, weight: .semibold, design: .rounded)).monospacedDigit()
+                        .foregroundStyle(model.state.pomoPhase != nil && model.pomoRunning ? .primary : .secondary)
+                        .contentTransition(.numericText(countsDown: true))
+                        .animation(.snappy, value: Int(model.pomoLeft))
+                }
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(Array(stride(from: 0, to: plan.count, by: 8)), id: \.self) { start in
+                    row(plan, start)
+                }
+            }
+            HStack(spacing: 12) {
+                legend(Self.focusTint, "\(Int(plan[0].minutes)) min rounds")
+                legend(Self.breakTint, "\(Int(plan[1].minutes)) min breaks")
+            }
+        }
+        .frame(width: 444)
+    }
+
+    func row(_ plan: [PomoBlock], _ start: Int) -> some View {
+        // The set that ends in lunch is the longest: it sets the scale.
+        let perMinute = 350 / plan[8..<16].reduce(0) { $0 + $1.minutes }
+        let end = plan[start + 7]
+        return HStack(spacing: 3) {
+            ForEach(start..<(start + 8), id: \.self) { i in
+                segment(plan, i, width: (plan[i].minutes * perMinute).rounded())
+            }
+            Spacer(minLength: 8)
+            HStack(spacing: 3) {
+                if end.kind == .lunch { Image(systemName: "fork.knife") }
+                Text("\(Int(end.minutes)) min")
+            }
+            .font(.system(size: 10.5, weight: .medium)).monospacedDigit().foregroundStyle(.secondary)
+            .fixedSize()
+        }
+    }
+
+    func segment(_ plan: [PomoBlock], _ i: Int, width: CGFloat) -> some View {
+        let at = model.pomoBlock
+        let active = i == at && model.state.pomoPhase != nil
+        // Clamped: a round shortened in the config can have more time left than its new length.
+        let filled = i < at ? 1 : active ? max(0, min(1, 1 - model.pomoLeft / model.pomoLength)) : 0
+        let tint = plan[i].kind == .focus ? Self.focusTint : Self.breakTint
+        return Capsule().fill(Color.primary.opacity(active ? 0.22 : 0.13))
+            .overlay(alignment: .leading) {
+                tint.opacity(active && !model.pomoRunning ? 0.5 : 1).frame(width: width * filled)
+            }
+            .clipShape(Capsule())
+            .frame(width: width, height: active ? 10 : 7)
+            .frame(height: 10)
+    }
+
+    func legend(_ tint: Color, _ text: String) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(tint).frame(width: 6, height: 6)
+            Text(text).font(.system(size: 10.5)).foregroundStyle(.secondary)
+        }
+    }
+
+    func title(_ plan: [PomoBlock]) -> String {
+        let at = model.pomoBlock
+        guard at < plan.count else { return "Day complete" }
+        if model.state.pomoPhase != nil, plan[at].kind != .focus { return plan[at].kind == .lunch ? "Lunch" : "Break" }
+        let rounds = plan.filter { $0.kind == .focus }.count
+        return "Round \(plan[..<at].filter { $0.kind == .focus }.count + 1) of \(rounds)"
+    }
+
+    func subtitle(_ done: Bool) -> String {
+        let count = "\(model.pomoCount) finished today"
+        if done { return "\(count) · click the timer to start over" }
+        if model.state.pomoPhase == nil { return "\(count) · click the timer to start" }
+        return model.pomoRunning ? count : "Paused · \(count)"
     }
 }
 
@@ -2187,13 +2414,29 @@ struct PomodoroView: View {
         }
         .buttonStyle(.plain)
         .overlay(Halo(trigger: model.nudge, tint: tint))
-        .onHover { hover = $0 }
-        .help(idle ? "Start a 25-minute focus round"
-              : "\(onBreak ? "Break" : "Focus") \(long(model.pomoLeft))\(paused ? ", paused" : "") · \(model.pomoCount) today · click to \(paused ? "resume" : "pause")")
+        .background(GeometryReader { g in
+            Color.clear
+                .onAppear { model.pomoFrame = g.frame(in: .named("dock")) }
+                .onChange(of: g.frame(in: .named("dock"))) { _, f in model.pomoFrame = f }
+        })
+        .onHover { hover = $0; model.hover(pomoCard, $0) }
         .contextMenu {
             Button(idle ? "Start Focus" : (paused ? "Resume" : "Pause")) { model.pomoTap() }
-            if !idle { Button(onBreak ? "Skip to Focus" : "Skip to Break") { model.pomoSkip() } }
+            if !idle { Button(skipTitle) { model.pomoSkip() } }
             Button("Reset") { model.pomoReset() }
+            if model.pomoBlock > 0 {
+                Button("Start the Day Over") { model.state.pomoBlock = 0; model.pomoReset() }
+            }
+        }
+    }
+
+    var skipTitle: String {
+        let next = model.pomoBlock + 1
+        guard next < model.plan.count else { return "Finish the Day" }
+        switch model.plan[next].kind {
+        case .focus: return "Skip to Focus"
+        case .rest: return "Skip to Break"
+        case .lunch: return "Skip to Lunch"
         }
     }
 }
@@ -2238,11 +2481,12 @@ struct AppIcon: View {
                 Divider()
             }
             let shared = model.isShared(id)
-            ForEach(model.config.modes.map(\.name).filter { shared || $0 != model.state.current }, id: \.self) { mode in
+            let targets = id == finderID ? [] : model.config.modes.map(\.name).filter { shared || $0 != model.state.current }
+            ForEach(targets, id: \.self) { mode in
                 Button("Move to \(mode)") { model.moveApp(app, to: mode) }
             }
             if !shared { Button("Show in All Modes") { model.share(app) } }
-            if !shared, let mode = model.owner(id), !model.preview(mode).contains(id) {
+            if let mode = shared ? model.state.current : model.owner(id), !model.preview(mode).contains(id) {
                 Button("Add to \(mode)'s Top 5") { model.setOnCard(id, mode, true) }
             }
             Button("Quit \(app.localizedName ?? "App")") { app.terminate() }
@@ -2316,6 +2560,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         p.hidesOnDeactivate = false
         p.becomesKeyOnlyIfNeeded = true
         p.ignoresMouseEvents = !mouse
+        // The dock is never the active app (its panels do not activate it), and macOS shows a
+        // window's tooltips only while its app is active unless the window allows them: without
+        // this, a `.help` in the dock or its card hardly ever showed.
+        p.allowsToolTipsWhenApplicationIsInactive = mouse
         // Not .fullScreenAuxiliary: macOS keeps the dock out of a full-screen space by itself.
         p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         p.contentView = view
@@ -2587,7 +2835,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The card fades in once and then stays put: moving to another mode's button moves it there,
     /// and a fade-out that a new hover overtook does not take the card away.
     func showPreview(_ mode: String?) {
-        guard let mode, model.modeFrames[mode] != nil, !hiddenForFullScreen else {
+        guard let mode, model.cardFrame(mode) != nil, !hiddenForFullScreen else {
             previewMode = nil
             NSAnimationContext.runAnimationGroup({ c in
                 c.duration = 0.12
@@ -2610,9 +2858,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Centred over the mode's button, just above the dock, in whole points.
+    /// Centred over the mode's button or the pomodoro, just above the dock, in whole points.
     func placePreview() {
-        guard let mode = previewMode, let f = model.modeFrames[mode] else { return }
+        guard let mode = previewMode, let f = model.cardFrame(mode) else { return }
         let size = model.previewSize == .zero ? previewHost.fittingSize : model.previewSize
         guard size.width >= 1 else { return }
         // The button's frame is in the dock view's flipped coordinates.
