@@ -1,21 +1,28 @@
 # Anti-Dopamine Bar
 
+![The Anti-Dopamine Bar in 30 seconds](docs/demo.gif)
+
+<sub>[The same video as an MP4](docs/demo.mp4), sharper.</sub>
+
 A small macOS dock that separates the applications you work in from the ones designed to hold
 your attention. Each application belongs to one mode; switching hides the applications of the
 mode you leave and restores, all at once, those of the mode you enter.
 
 Feeds and video sites run on variable reward, which makes a quick look easy to start and hard to
-end. The third mode, Socials, therefore has a cost of entry: during a focus round it opens only
-after a short wait, which clicking can shorten but not skip. During a break it opens freely, and
-when the break ends the dock returns you to the mode you came from. The dock offers no streaks,
+end. The third mode, Socials, therefore has a cost of entry: during a focus round it stays shut
+until the break, however often you click it. During a break, or with the timer paused, it opens
+freely, and when the break ends the dock returns you to the mode you came from. The dock offers no streaks,
 badges or other rewards of its own, since those would be a source of dopamine too. It is, in
 short, a fairly *nuchter* piece of software: sober, practical, and not out to entertain you.
 
 - **Modes**: Profile 1, Profile 2 and Socials by default. Rename them, change their icons, colours
   and apps in `~/.config/workspace-bar/config.json`. An app you open joins the mode you are in;
-  right-click an icon to move it to another mode or share it with every mode.
-- **Pomodoro**: 25-minute focus rounds and 5-minute breaks. A break opens Socials; the end of a
-  break takes you back to where you came from.
+  right-click an icon to move it to another mode or share it with every mode. Browsers are shared
+  with every mode from the start, so one browser serves them all; the extension (below) keeps
+  social sites to Socials.
+- **Pomodoro**: 25-minute focus rounds and 5-minute breaks. A break opens Socials, and so does
+  pausing the timer; the end of a break, or resuming a focus round, takes you back to where you
+  came from.
 - **Cards**: hover a mode's button to see its top five apps and open one straight from there.
 - **Add-ins** (the dock's menu, shown only for what is installed):
   - *Cmd-Tab for this mode only*: an AltTab-style switcher listing the current mode's apps.
@@ -48,7 +55,7 @@ The log is `~/Library/Logs/workspace-bar.log`. Tests (Raycast handling): `tests/
 `extension/` blocks social media and YouTube unless the dock is in Socials. The dock answers
 `http://127.0.0.1:47391/mode` (on this Mac only) with the mode and the sites to block: the
 config's `socialSites`, or the list in `modeserver.swift`. A blocked page shows a short notice and
-comes back by itself once you switch to Socials. With the dock not running, nothing is blocked.
+comes back by itself once you switch to Socials, or pause the timer. With the dock not running, nothing is blocked.
 
 The app keeps an up-to-date copy in `~/.config/workspace-bar/extensions` (the menu's **Show
 Browser Extension Folder** opens it):

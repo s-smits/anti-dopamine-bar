@@ -66,12 +66,12 @@ final class RaycastSync {
 
     private func wake() {
         tick()
-        if timer == nil, applied != (model.currentMode?.gate != nil) { timer = every(0.25) { [weak self] in self?.tick() } }
+        if timer == nil, applied != (model.currentMode?.gate != nil || model.paused) { timer = every(0.25) { [weak self] in self?.tick() } }
     }
 
     private func tick() {
         guard jobs == 0 else { return }
-        let gated = model.currentMode?.gate != nil
+        let gated = model.currentMode?.gate != nil || model.paused   // paused, Raycast lists them all
         if seen?.gated != gated { seen = (gated, Date()) }
         guard applied != gated, let s = seen else { timer?.invalidate(); timer = nil; return }
         if !gated, applied != nil, Date().timeIntervalSince(s.since) < 10 || raycastWindowOpen() { return }
@@ -147,10 +147,9 @@ final class RaycastSync {
         guard let url = appURL() else { return }
         let c = NSWorkspace.OpenConfiguration()
         c.activates = false
-        // Raycast shows its window on every launch, for up to 4 s, even one that does not
-        // activate it: each switch into or out of Socials flashed it. Launched hidden, it shows
-        // nothing until its hotkey.
-        c.hides = true
+        // Raycast shows its window for a few seconds on every launch. Not launched hidden
+        // (`hides`): that hid the window, but Raycast's hotkey then opened nothing, unhidden or
+        // not, and an Escape sent to it did not close the window either (8 November).
         c.addsToRecentItems = false
         NSWorkspace.shared.openApplication(at: url, configuration: c)
     }

@@ -3,7 +3,7 @@ import Network
 
 /// Tells the browser extension in `extension/` which mode is current, on 127.0.0.1 only:
 /// `GET /mode?browser=brave` answers `{"mode": "Profile 1", "social": false, "sites": [...]}`.
-/// `social` is true in a gated mode (Socials); everywhere else the extension blocks `sites`, the
+/// `social` is true in a gated mode (Socials) and while the timer is paused; otherwise the extension blocks `sites`, the
 /// config's `socialSites` or the list below. Each browser is its own add-in (Brave, Chrome,
 /// Firefox): the extension names its browser, and one whose add-in is off is answered as if
 /// in Socials, so it blocks nothing. No CORS header, so a web page cannot read the answer, and only
@@ -101,7 +101,7 @@ final class ModeServer {
         let key = AddIns.browsers.first { $0.name == browser }?.key ?? \.chrome
         let on = model.addIn(key)
         let sites = on ? (model.config.socialSites ?? Self.defaultSites) : []
-        var json: [String: Any] = ["mode": mode?.name ?? "", "social": !on || mode?.gate != nil, "sites": sites]
+        var json: [String: Any] = ["mode": mode?.name ?? "", "social": !on || mode?.gate != nil || model.paused, "sites": sites]
         if !on { json["off"] = true }
         return (try? JSONSerialization.data(withJSONObject: json)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
     }

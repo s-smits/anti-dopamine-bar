@@ -27,10 +27,10 @@ import SwiftUI
 
 // MARK: - Config and state
 
+/// A mode that waits: during a focus round it opens at the break, or at once with the timer paused.
+/// (A config's old `cutPerClick` and `floorSeconds` are read past: clicks no longer cut the wait.)
 struct Gate: Codable {
-    var startMinutes: Double   // wait on the first click
-    var cutPerClick: Double    // share of the remaining wait each further click removes
-    var floorSeconds: Double   // clicking never brings the wait below this
+    var startMinutes: Double   // the wait when no focus round is running
 }
 
 struct Mode: Codable {
@@ -161,11 +161,27 @@ let stateURL = dir.appendingPathComponent("state.json")
 /// off the shared list for good, so the other two modes lost it and clicking it left them.
 let finderID = "com.apple.finder"
 
+/// Browsers are shared by every mode unless pinned to one: a browser serves each mode, its windows
+/// stay up through a switch, and the browser add-in's extension keeps social sites to Socials.
+/// Owned by one mode, a browser hid in the others and clicking it took you back (8 November).
+let browserIDs: Set<String> = [
+    "com.brave.Browser", "com.brave.Browser.beta", "com.brave.Browser.nightly",
+    "com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.dev", "com.google.Chrome.canary",
+    "org.chromium.Chromium", "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition", "org.mozilla.nightly",
+    "com.apple.Safari", "com.apple.SafariTechnologyPreview", "company.thebrowser.Browser", "company.thebrowser.dia",
+    "com.microsoft.edgemac", "com.vivaldi.Vivaldi", "com.operasoftware.Opera", "app.zen-browser.zen", "com.kagi.kagimacOS",
+]
+
+/// Shared by every mode unless pinned to one: a browser, or an app matching a shared prefix (Brave's web apps).
+func sharedByDefault(_ id: String, _ config: Config) -> Bool {
+    browserIDs.contains(id) || (config.sharedPrefixes ?? []).contains { id.hasPrefix($0) }
+}
+
 let defaultConfig = Config(modes: [
     Mode(name: "Profile 1", icon: "1.circle.fill", color: "#2F6BD8", gate: nil, apps: nil),
     Mode(name: "Profile 2", icon: "2.circle.fill", color: "#D7891E", gate: nil, apps: nil),
     Mode(name: "Socials", icon: "bubble.left.and.bubble.right.fill", color: "#D9443F",
-         gate: Gate(startMinutes: 25, cutPerClick: 1.0 / 3.0, floorSeconds: 3),
+         gate: Gate(startMinutes: 25),
          apps: ["net.whatsapp.WhatsApp", "com.hnc.Discord", "com.tinyspeck.slackmacgap"]),
 ], pomodoro: Pomodoro(focusMinutes: 25, breakMinutes: 5), alwaysVisible: [finderID],
    sharedPrefixes: ["com.brave.Browser.app."])   // Brave's web apps: each has its own bundle id
@@ -894,7 +910,7 @@ final class DockModel: ObservableObject {
             return
         }
         state.focus[mode] = id
-        if config.modes.first(where: { $0.name == mode })?.gate != nil && !onBreak {
+        if config.modes.first(where: { $0.name == mode })?.gate != nil && !unblocked {
             launchOnOpen = (mode, id)   // a gated mode still waits; the app comes in front when it opens
             tap(mode)
             return
@@ -1059,6 +1075,16 @@ final class DockModel: ObservableObject {
         var s = readJSON(stateURL, SavedState.self) ?? SavedState(current: config.modes.first?.name ?? "")
         if !config.modes.contains(where: { $0.name == s.current }) { s.current = config.modes.first?.name ?? "" }
         for key in s.apps.keys { s.apps[key]?.removeAll(where: config.alwaysVisible.contains) }   // a shared app has no mode
+        // Nor has a browser that is not pinned: a state that gave it a mode keeps what it counted
+        // there as that mode's count for it (its place on the card is in `order` already).
+        for (mode, ids) in s.apps {
+            for id in ids where sharedByDefault(id, config) && !config.modes.contains(where: { $0.apps?.contains(id) ?? false }) {
+                s.apps[mode]?.removeAll { $0 == id }
+                var shared = s.sharedUsage ?? [:]
+                if shared[mode]?[id] == nil, let u = s.usage?[id] { shared[mode, default: [:]][id] = u }
+                s.sharedUsage = shared
+            }
+        }
         state = s
         scale = s.scale ?? 1
         ready = s.gateReady.flatMap { r in config.modes.contains { $0.name == r } ? r : nil }
@@ -1178,14 +1204,10 @@ final class DockModel: ObservableObject {
     var incoming: Set<String> = []   // apps a switch is bringing back, until it has settled
     var switchCount = 0
 
-    /// Shared with every mode: named in alwaysVisible, or matching a shared prefix (Brave's web
-    /// apps) and not pinned to one mode.
+    /// Shared with every mode: named in alwaysVisible, or a browser or web app not pinned to one mode.
     func isShared(_ id: String) -> Bool {
-        config.alwaysVisible.contains(id)
-            || (config.sharedPrefixes ?? []).contains { id.hasPrefix($0) } && pinned(id) == nil
+        config.alwaysVisible.contains(id) || sharedByDefault(id, config) && pinned(id) == nil
     }
-
-    func matchesSharedPrefix(_ id: String) -> Bool { (config.sharedPrefixes ?? []).contains { id.hasPrefix($0) } }
 
     /// Fix an app to one mode in the config (or to none).
     func pin(_ id: String, to mode: String?) {
@@ -1230,22 +1252,14 @@ final class DockModel: ObservableObject {
             switchTo(name)
             return
         }
-        // A paused break is still a break: asking for a gated mode resumes it and opens the mode,
-        // so the break's clock runs while you are in there.
-        if mode.gate != nil, state.pomoPhase == "break", state.pomoEnd == nil, let left = state.pomoLeft {
-            state.pomoEnd = Date().addingTimeInterval(left)
-            state.pomoLeft = nil
-            writeJSON(stateURL, state)
-            log("  resume the break (\(Int(left)) s left)")
-        }
-        guard let g = mode.gate, !onBreak else {
-            if mode.gate != nil { cancelGate() }   // a break opens a gated mode at once
+        guard let g = mode.gate, !unblocked else {
+            if mode.gate != nil { cancelGate() }   // a break or a pause opens a gated mode at once
             switchTo(name)
             return
         }
         // During focus each burst of clicks starts with three that only warn: the button blinks
         // red and a halo around the pomodoro says a round is on. Only the clicks after those start
-        // the wait, or cut it once it runs. After 4 s without a click here the warning is back, so
+        // the wait. After 4 s without a click here the warning is back, so
         // coming back later meets it again, a wait already running or not.
         if state.pomoPhase == "focus" {
             if Date().timeIntervalSince(nudgedAt) > 4 { nudges = 0 }
@@ -1260,23 +1274,21 @@ final class DockModel: ObservableObject {
                 return
             }
         }
-        if pending == name, let d = deadline {
-            let rem = max(0, d.timeIntervalSinceNow)
-            let next = min(rem, max(g.floorSeconds, rem * (1 - g.cutPerClick)))
-            deadline = Date().addingTimeInterval(next)
-            remaining = next
+        // The mode stays shut until the round's break: more clicks only warn (until 8 November each
+        // cut a third of the wait, and some fast clicking opened it in seconds). Pausing the timer
+        // is the way in before the break.
+        if pending == name {
             clickedAt = Date()
+            denied[name, default: 0] += 1
             saveGate()
             return
         }
         cancelGate()
-        // Asking for a gated mode starts a focus round if none is set, and a running focus round
-        // sets the wait: left alone, the mode opens when the break begins. Clicks cut only the
-        // wait; the pomodoro keeps its own time.
+        // Asking for a gated mode starts a focus round if none is set; the wait is the round's
+        // time left, so left alone the mode opens when the break begins.
         if state.pomoPhase == nil { startPlan() }
-        let focusLeft = state.pomoPhase == "focus" && pomoRunning ? pomoLeft : .infinity
         pending = name
-        gateTotal = max(1, min(g.startMinutes * 60, focusLeft))
+        gateTotal = max(1, focusRunning ? pomoLeft : g.startMinutes * 60)
         remaining = gateTotal
         deadline = Date().addingTimeInterval(gateTotal)
         clickedAt = Date()
@@ -1335,9 +1347,9 @@ final class DockModel: ObservableObject {
             launchOnOpen = launch
             switchTo(name)
         } else {
-            if !onBreak { ready = name }
+            if !unblocked { ready = name }
             saveGate()
-            log("wait for \(name) over, last click \(Int(Date().timeIntervalSince(clickedAt))) s ago: \(onBreak ? "the break opens it" : "the next click opens it")")
+            log("wait for \(name) over, last click \(Int(Date().timeIntervalSince(clickedAt))) s ago: \(unblocked ? "the break or pause opens it" : "the next click opens it")")
         }
     }
 
@@ -1426,7 +1438,7 @@ final class DockModel: ObservableObject {
             if let next { Vis.focus(next) }
             return
         }
-        if config.modes.first(where: { $0.name == other })?.gate != nil && !onBreak {
+        if config.modes.first(where: { $0.name == other })?.gate != nil && !unblocked {
             log("blocked \(id): \(other) waits for a break")
             Vis.set([app], visible: false)
             denied[other, default: 0] += 1   // opened from Raycast or elsewhere: its button blinks red
@@ -1513,8 +1525,8 @@ final class DockModel: ObservableObject {
             config.alwaysVisible.removeAll { $0 == id }
             writeJSON(configURL, config)
         }
-        if matchesSharedPrefix(id) {
-            pin(id, to: mode)   // a web app leaves the shared set only by being pinned
+        if sharedByDefault(id, config) {
+            pin(id, to: mode)   // a browser or web app leaves the shared set only by being pinned
         } else if let p = pinned(id), p != mode {
             pin(id, to: nil)
         }
@@ -1542,7 +1554,7 @@ final class DockModel: ObservableObject {
         guard let id = app.bundleIdentifier, !isShared(id) else { return }
         let from = owner(id), count = state.usage?[id]
         pin(id, to: nil)
-        if !matchesSharedPrefix(id) {
+        if !sharedByDefault(id, config) {
             config.alwaysVisible.append(id)
             writeJSON(configURL, config)
         }
@@ -1658,7 +1670,12 @@ final class DockModel: ObservableObject {
 
     var pomo: Pomodoro { config.pomodoro ?? Pomodoro(focusMinutes: 25, breakMinutes: 5) }
     var onBreak: Bool { state.pomoPhase == "break" && state.pomoEnd != nil }
+    var paused: Bool { state.pomoPhase != nil && state.pomoEnd == nil }
+    /// On a break or with the timer paused, nothing is held back: a gated mode opens at once, its
+    /// apps show anywhere, the browsers block no site and Raycast lists every app.
+    var unblocked: Bool { onBreak || paused }
     var pomoRunning: Bool { state.pomoEnd != nil }
+    var focusRunning: Bool { state.pomoPhase == "focus" && pomoRunning }
     var plan: [PomoBlock] { pomo.plan }
     /// Where the plan stands. Past the last block it is done; idle on a later day it starts over.
     var pomoBlock: Int { state.pomoPhase == nil && state.pomoDay != today ? 0 : state.pomoBlock ?? 0 }
@@ -1676,12 +1693,14 @@ final class DockModel: ObservableObject {
 
     func pomoTap() {
         guard !justDragged else { return }
-        if let end = state.pomoEnd {                       // running: pause
+        if let end = state.pomoEnd {                       // running: pause, which holds nothing back
             state.pomoLeft = max(0, end.timeIntervalSinceNow)
             state.pomoEnd = nil
+            if let p = pending { waitOver(p) }
         } else if let left = state.pomoLeft {              // paused: resume
             state.pomoEnd = Date().addingTimeInterval(left)
             state.pomoLeft = nil
+            if state.pomoPhase == "focus" { leaveGatedMode() }   // as when a round of focus starts
         } else {                                           // idle: start focusing
             startPlan()
         }
