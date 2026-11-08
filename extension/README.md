@@ -1,6 +1,6 @@
 # Socials only in Socials
 
-A browser extension that blocks social media and YouTube unless Anti-Dopamine Bar is in its gated mode
+A browser extension that blocks social media and YouTube unless Anti-Dopamine Dock is in its gated mode
 (Socials). The dock answers `http://127.0.0.1:47391/mode?browser=<name>` with the current mode and
 the sites to block: the config's `socialSites`, or the list in `modeserver.swift`. Outside Socials
 a page on one of them goes to a short notice and comes back by itself once you switch to Socials.

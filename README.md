@@ -1,6 +1,6 @@
-# Anti-Dopamine Bar
+# Anti-Dopamine Dock
 
-![The Anti-Dopamine Bar in 30 seconds](docs/demo.gif)
+![The Anti-Dopamine Dock in 30 seconds](docs/demo.gif)
 
 <sub>[The same video as an MP4](docs/demo.mp4), sharper.</sub>
 

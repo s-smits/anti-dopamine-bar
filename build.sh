@@ -1,26 +1,26 @@
 #!/bin/zsh
-# Build AntiDopamineBar.app, install it to ~/Applications, start it at login, and leave room for
-# the bar at the bottom of the screen in Rectangle's layouts.
+# Build AntiDopamineDock.app, install it to ~/Applications, start it at login, and leave room for
+# the dock at the bottom of the screen in Rectangle's layouts.
 set -euo pipefail
 cd "${0:A:h}"
-APP=build/AntiDopamineBar.app
+APP=build/AntiDopamineDock.app
 rm -rf build && mkdir -p "$APP/Contents/MacOS"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>local.workspacebar</string>
-  <key>CFBundleName</key><string>AntiDopamineBar</string>
-  <key>CFBundleDisplayName</key><string>Anti-Dopamine Bar</string>
-  <key>CFBundleExecutable</key><string>AntiDopamineBar</string>
+  <key>CFBundleName</key><string>AntiDopamineDock</string>
+  <key>CFBundleDisplayName</key><string>Anti-Dopamine Dock</string>
+  <key>CFBundleExecutable</key><string>AntiDopamineDock</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.1</string>
+  <key>CFBundleShortVersionString</key><string>0.1.2</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
-  <key>NSAppleEventsUsageDescription</key><string>Anti-Dopamine Bar hides and shows apps when you switch modes.</string>
+  <key>NSAppleEventsUsageDescription</key><string>Anti-Dopamine Dock hides and shows apps when you switch modes.</string>
 </dict></plist>
 PLIST
-swiftc -O -swift-version 5 -parse-as-library main.swift switcher.swift hotkeys.swift modeserver.swift gatecore.swift raycastcore.swift raycast.swift hooks.swift -o "$APP/Contents/MacOS/AntiDopamineBar"
+swiftc -O -swift-version 5 -parse-as-library main.swift switcher.swift hotkeys.swift modeserver.swift gatecore.swift raycastcore.swift raycast.swift hooks.swift -o "$APP/Contents/MacOS/AntiDopamineDock"
 # The browser extension, a folder for Chromium browsers and one for Firefox, which the app copies
 # to ~/.config/workspace-bar/extensions (ModeServer.extensionsFolder), and a zip of each.
 EXT="$APP/Contents/Resources/extensions"
@@ -30,16 +30,17 @@ for b in chromium firefox; do
 done
 cp extension/manifest.json "$EXT/chromium/manifest.json"
 cp extension/manifest.firefox.json "$EXT/firefox/manifest.json"
-for b in chromium firefox; do (cd "$EXT/$b" && zip -qrX "$PWD/../../../../../anti-dopamine-bar-$b.zip" .); done
+for b in chromium firefox; do (cd "$EXT/$b" && zip -qrX "$PWD/../../../../../anti-dopamine-dock-$b.zip" .); done
 # A designated requirement on the identifier alone keeps macOS permissions across rebuilds.
 codesign --force -s - --requirements '=designated => identifier "local.workspacebar"' "$APP"
 
 [[ "${1:-}" == "--no-install" ]] && exit 0
 
-pkill -x AntiDopamineBar 2>/dev/null || true
-pkill -x WorkspaceBar 2>/dev/null || true   # the name before 0.0.1
+pkill -x AntiDopamineDock 2>/dev/null || true
+pkill -x AntiDopamineBar 2>/dev/null || true   # the name before 0.1.2
+pkill -x WorkspaceBar 2>/dev/null || true      # the name before 0.0.1
 mkdir -p ~/Applications
-rm -rf ~/Applications/AntiDopamineBar.app ~/Applications/WorkspaceBar.app
+rm -rf ~/Applications/AntiDopamineDock.app ~/Applications/AntiDopamineBar.app ~/Applications/WorkspaceBar.app
 cp -R "$APP" ~/Applications/
 # The app sets Rectangle's bottom gap to its own height (syncRectangleGap).
 AGENT=~/Library/LaunchAgents/local.workspacebar.plist
@@ -48,7 +49,7 @@ cat > "$AGENT" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>local.workspacebar</string>
-  <key>ProgramArguments</key><array><string>$HOME/Applications/AntiDopamineBar.app/Contents/MacOS/AntiDopamineBar</string></array>
+  <key>ProgramArguments</key><array><string>$HOME/Applications/AntiDopamineDock.app/Contents/MacOS/AntiDopamineDock</string></array>
   <key>RunAtLoad</key><true/>
   <key>ProcessType</key><string>Interactive</string>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
@@ -59,4 +60,4 @@ PLIST
 launchctl bootout gui/$(id -u)/local.workspacebar 2>/dev/null || true
 # bootout returns before the job is gone: retry for a few seconds.
 for _ in 1 2 3 4 5; do launchctl bootstrap gui/$(id -u) "$AGENT" 2>/dev/null && break; sleep 1; done
-echo "installed: ~/Applications/AntiDopamineBar.app (log ~/Library/Logs/workspace-bar.log)"
+echo "installed: ~/Applications/AntiDopamineDock.app (log ~/Library/Logs/workspace-bar.log)"

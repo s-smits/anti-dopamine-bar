@@ -1,4 +1,4 @@
-// Blocks social sites unless Anti-Dopamine Bar's current mode is a gated one (Socials). The dock tells
+// Blocks social sites unless Anti-Dopamine Dock's current mode is a gated one (Socials). The dock tells
 // the mode at http://127.0.0.1:47391/mode. A page is sent to blocked.html, which goes back to it
 // once Socials is current. With the dock not running, nothing is blocked. One file for Brave,
 // Chrome and Firefox: Firefox's `browser` promises, Chromium's `chrome`.

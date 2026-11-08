@@ -1,4 +1,4 @@
-// Anti-Dopamine Bar: a dock at the bottom of the screen with three modes. Each app belongs to one mode.
+// Anti-Dopamine Dock: a dock at the bottom of the screen with three modes. Each app belongs to one mode.
 // Leaving a mode hides its apps; entering one brings back, all at once, its front app and the apps
 // that had a window in one of Rectangle's fields (a half, third, quarter or maximised), and leaves
 // the rest hidden until you ask for them (Cmd-Tab, or the mode's card on hover).
@@ -2062,7 +2062,7 @@ struct DockView: View {
                 Button("Large") { model.setScale(1.25) }
             }
             Divider()
-            Button("Quit Anti-Dopamine Bar") { NSApp.terminate(nil) }
+            Button("Quit Anti-Dopamine Dock") { NSApp.terminate(nil) }
         }
     }
 }

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Anti-Dopamine Bar: Socials Only in Socials",
-  "version": "0.1.1",
-  "description": "Blocks social media and YouTube unless Anti-Dopamine Bar is in Socials.",
+  "name": "Anti-Dopamine Dock: Socials Only in Socials",
+  "version": "0.1.2",
+  "description": "Blocks social media and YouTube unless Anti-Dopamine Dock is in Socials.",
   "permissions": ["declarativeNetRequestWithHostAccess", "alarms", "webNavigation"],
   "host_permissions": ["<all_urls>"],
   "background": { "scripts": ["background.js"] },
