@@ -4,78 +4,108 @@
 
 <sub>[The same video as an MP4](docs/demo.mp4), sharper.</sub>
 
-A small macOS dock that separates the applications you work in from the ones designed to hold
-your attention. Each application belongs to one mode; switching hides the applications of the
-mode you leave and restores, all at once, those of the mode you enter.
+A small dock for macOS that keeps the apps you work in apart from the apps built to hold your
+attention. You sort your apps into modes. Switching modes hides one set of apps and brings back the
+other, all at once.
 
-Feeds and video sites run on variable reward, which makes a quick look easy to start and hard to
-end. The third mode, Socials, therefore has a cost of entry: during a focus round it opens only
-after a wait that lasts until the break. Steady clicking shortens it, each click by 15%, and five
-seconds without a click puts it back. During a break, or with the timer paused, it opens freely,
-and when the break ends the dock returns you to the mode you came from. The dock offers no streaks,
-badges or other rewards of its own, since those would be a source of dopamine too. It is, in
-short, a fairly *nuchter* piece of software: sober, practical, and not out to entertain you.
+Feeds and video sites are easy to open and hard to close. So the third mode, Socials, is not free:
+during a focus round you have to wait for it. On a break it opens right away. The dock has no
+streaks, badges or rewards of its own, because those would hook you too. It is a fairly *nuchter*
+piece of software: sober, practical, and not out to entertain you.
 
-- **Modes**: Profile 1, Profile 2 and Socials by default. Rename them, change their icons, colours
-  and apps in `~/.config/workspace-bar/config.json`. An app you open joins the mode you are in;
-  right-click an icon to move it to another mode or share it with every mode. Browsers are shared
-  with every mode from the start, so one browser serves them all; the extension (below) keeps
-  social sites to Socials.
-- **Pomodoro**: 25-minute focus rounds and 5-minute breaks. A break opens Socials, and so does
-  pausing the timer; the end of a break, or resuming a focus round, takes you back to where you
-  came from.
-- **Cards**: hover a mode's button to see its top five apps and open one straight from there.
-- **Add-ins** (the dock's menu, shown only for what is installed):
-  - *Cmd-Tab for this mode only*: an AltTab-style switcher listing the current mode's apps.
-  - *Option-1 to 3*: the first three modes from the keyboard.
-  - *Raycast*: Raycast leaves out Socials' apps outside Socials (Raycast 1 and 2).
-  - *Rectangle*: Rectangle's layouts leave room for the dock; its layouts on an app's right-click.
-    Switched off, Rectangle gets its own bottom gap back.
-  - *Brave, Chrome, Firefox*: the browser extension blocks social sites and YouTube outside
-    Socials (below).
-  - *Custom hooks*: your own scripts run on every switch (`~/.config/workspace-bar/hooks/`, see
-    `example.sh.off` there). A script runs only if you own it and no one else can write to it.
+## Install
 
-## Build and install
-
-Needs macOS 14 or later and the Xcode command line tools (`xcode-select --install`).
+You need macOS 14 or later and Apple's command line tools (`xcode-select --install`). Then, in this
+folder:
 
 ```sh
-./build.sh               # builds, installs to ~/Applications and starts it at login (LaunchAgent)
-./build.sh --no-install  # only builds build/AntiDopamineBar.app and the extension zips
+./build.sh
 ```
 
-On first start macOS asks for **Accessibility** (System Settings, Privacy & Security), which the
-dock needs to hide, show and focus windows and to read Cmd-Tab and Option-1 to 3. The app is
-signed ad hoc with a designated requirement on its identifier alone, so the permission survives
-rebuilds; build it yourself rather than running a binary someone sends you.
+This builds the app, puts it in `~/Applications` and starts it now and at every login. The first
+time it runs, macOS asks for **Accessibility** access (System Settings, Privacy & Security). The
+dock needs it to hide, show and focus windows, and for its keyboard shortcuts.
 
-The log is `~/Library/Logs/workspace-bar.log`. `tests/run.sh` runs the tests; `tests/sweep.md` lists
-what is checked by hand.
+Build the app yourself rather than running a copy someone sends you.
+
+## Using it
+
+**Modes.** There are three to start with: Profile 1, Profile 2 and Socials. Click one to switch.
+An app you open joins the mode you are in. Right-click an app's icon to move it to another mode, or
+to keep it in every mode. Browsers are in every mode from the start, and the browser extension
+(below) keeps social sites to Socials.
+
+**Cards.** Hover over a mode to see its top five apps, and click one to open it there.
+
+**The timer.** Click it to start a 25-minute focus round. Click it again to pause, and once more to
+resume. Breaks are 5 minutes, with a longer one after every fourth round and a lunch break after the
+eighth. Right-click the timer to skip ahead, reset it, or start the day over.
+
+**Socials.** On a break, or with the timer paused, Socials opens at once. When the break ends you go
+back to where you were. During a focus round:
+
+- The first three clicks on Socials only warn you.
+- The fourth starts a wait that lasts until the break.
+- Every click after that cuts the wait by 15%. Stop clicking for 5 seconds and the full wait comes
+  back.
+- If you just left Socials, you can go back within 5 seconds without waiting.
+- An app you pick from Socials' card in the last minute of the wait shows beside the countdown, and
+  opens by itself when the wait is over.
+
+**The dock itself.** Drag it to move it, and double-click an empty spot to centre it again.
+Right-click it for the menu: settings, add-ins, size, and quit.
+
+## Add-ins
+
+Turn these on and off under **Add-ins** in the dock's menu. Only the ones for apps you have
+installed are listed.
+
+- **Cmd-Tab for this mode only**: a switcher that lists only the current mode's apps.
+- **Option-1 to 3**: switch modes from the keyboard.
+- **Raycast**: Raycast leaves out Socials' apps unless you are in Socials.
+- **Rectangle**: Rectangle's window layouts leave room for the dock.
+- **Brave, Chrome, Firefox**: the browser extension blocks social sites in that browser.
+- **Custom hooks**: run your own scripts on every switch. Choose **Open Hooks Folder** in the menu;
+  `example.sh.off` there shows how. For safety, a script runs only if you own it and no one else
+  can change it.
+
+Turning an add-in off puts things back the way they were.
 
 ## The browser extension
 
-The extension in `extension/` keeps social media and YouTube closed unless Socials is open: you
-are in Socials, on a break, or the timer is paused. A blocked page comes back by itself once it is.
-With the dock not running, nothing is blocked. The sites are `socialSites` in the config.
+The extension keeps social media and YouTube closed unless Socials is open (you are in Socials, on
+a break, or the timer is paused). A blocked page comes back by itself as soon as it is. If the dock
+is not running, nothing is blocked.
 
-To install it, choose **Show Browser Extension Folder** in the dock's menu, then:
+To install it, choose **Add-ins > Show Browser Extension Folder** in the dock's menu, then:
 
 - **Brave, Chrome, Edge, Arc**: on the browser's extensions page, turn on Developer mode, choose
   **Load unpacked** and pick the `chromium` folder.
-- **Firefox**: in `about:debugging`, choose **Load Temporary Add-on** and pick
-  `firefox/manifest.json`. It lasts until Firefox restarts.
+- **Firefox**: in `about:debugging`, choose **This Firefox**, then **Load Temporary Add-on**, and
+  pick `firefox/manifest.json`. It lasts until Firefox restarts.
 
-Each browser can be switched off on its own in the dock's menu.
+## Settings
 
-## Notes
+Choose **Edit Config…** in the dock's menu, then **Reload Config** when you are done. There you can:
 
-- Turning off macOS's own Cmd-Tab and focusing another app's window rely on macOS calls Apple does
-  not document, as AltTab does. Should a macOS version drop them, only those features stop working.
-- The Raycast add-in edits Raycast's settings, so macOS asks once to let it read Raycast's key. It
-  changes only what it added, and undoes that when switched off.
+- rename the modes and change their icons, colours and apps;
+- change the length of focus rounds and breaks (`pomodoro`);
+- change which sites the extension blocks (`socialSites`).
+
+## If something is off
+
+- The log is `~/Library/Logs/workspace-bar.log`, and your hooks' output is in
+  `workspace-bar-hooks.log` beside it.
+- Mode-only Cmd-Tab and window focusing use macOS features Apple does not document, as AltTab does.
+  If a macOS update removes them, only those two features stop working.
+- With Raycast 2, macOS asks once to let the Raycast add-in read Raycast's settings.
+
+## For developers
+
+- `./build.sh --no-install` only builds the app and the extension zips into `build/`.
+- `tests/run.sh` runs the tests. `tests/sweep.md` lists what is checked by hand before a release.
 
 ## Licence
 
-GPL-3.0, see `LICENSE`. The window focusing in `main.swift` (`WindowServer`) follows
+GPL-3.0, see `LICENSE`. The window focusing in `main.swift` follows
 [AltTab](https://github.com/lwouis/alt-tab-macos) (GPL-3.0) by lwouis and contributors.
